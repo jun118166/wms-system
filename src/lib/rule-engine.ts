@@ -330,6 +330,28 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
         }
       }
 
+      // 自动检测卡片式结构（如"▶ 调拨记录 #1"）
+      const cardStartMatch = autoDetectCardStructure(sheet.rows);
+      if (cardStartMatch) {
+        const autoCardConfig = {
+          enabled: true,
+          cardStartPattern: cardStartMatch.cardStartPattern,
+          cardTableStartPattern: cardStartMatch.cardTableStartPattern,
+          cardHeaderMapping: cardStartMatch.cardHeaderMapping,
+          cardTableMapping: [],
+        };
+        const autoCardRule: ParseRule = {
+          ...rule,
+          extractionMode: 'card',
+          cardConfig: autoCardConfig,
+        };
+        const cardItems = parseCards(autoCardRule, sheet.rows, footerInfo, errors);
+        if (cardItems.length > 0) {
+          allItems.push(...cardItems);
+          continue;
+        }
+      }
+
       // Standard row-based extraction
       // Detect end of data (before footer or empty rows)
       const effectiveRows = dataRows.slice(0, dataRows.length - rule.footerRowsToSkip);
@@ -833,6 +855,44 @@ function shouldSkipRow(row: any[], conditions?: SkipCondition[]): boolean {
 
 // ===== Card Parsing =====
 
+/** 自动检测卡片式结构：查找"▶ 调拨记录 #N"等标志性行 */
+function autoDetectCardStructure(rows: any[][]): {
+  cardStartPattern: string;
+  cardTableStartPattern: string;
+  cardHeaderMapping: { field: string; type: string; regexPattern: string; group: number }[];
+} | null {
+  const cardMarkers: string[] = [];
+  for (let i = 0; i < Math.min(rows.length, 50); i++) {
+    const rowStr = rows[i].join(' ').trim();
+    // 匹配 "▶ 调拨记录 #N" / "【记录 N】" / "卡片 #N" 等
+    const match = rowStr.match(/[▶▶▸►].*?(?:记录|调拨|运单|卡片|订单).*?#?\d+/i);
+    if (match) cardMarkers.push(match[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  }
+  if (cardMarkers.length < 2) return null;
+
+  // 查找卡片内表头模式（如"物品编码"）
+  let tableHeaderPattern = '物品编码|物品名称';
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const rowStr = rows[i].join(' ').trim();
+    if (/物品编码/.test(rowStr) && /物品名称/.test(rowStr)) {
+      tableHeaderPattern = '物品编码';
+      break;
+    }
+  }
+
+  const uniqueMarkers = [...new Set(cardMarkers)];
+  return {
+    cardStartPattern: '[▶▶▸►].*?(?:记录|调拨|运单|卡片|订单)',
+    cardTableStartPattern: tableHeaderPattern,
+    cardHeaderMapping: [
+      { field: 'storeName', type: 'regex', regexPattern: '调入门店[：:\\s]*([^\\s]+)', group: 1 },
+      { field: 'recipientName', type: 'regex', regexPattern: '收货人[：:\\s]*([^\\s]+)', group: 1 },
+      { field: 'recipientPhone', type: 'regex', regexPattern: '电话[：:\\s]*(\\d{11}|\\d{3}[-\\s]?\\d{8})', group: 1 },
+      { field: 'recipientAddress', type: 'regex', regexPattern: '收货地址[：:\\s]*(\\S+)', group: 1 },
+    ],
+  };
+}
+
 function parseCards(rule: ParseRule, rows: any[][], footerInfo: Record<string, string>, errors: string[]): OrderItem[] {
   const items: OrderItem[] = [];
   const cardConfig = rule.cardConfig!;
@@ -874,18 +934,20 @@ function parseCards(rule: ParseRule, rows: any[][], footerInfo: Record<string, s
 
     // Find inner table and parse items
     let tableStart = -1;
-    let tableEnd = cardRows.length;
 
     if (cardConfig.cardTableStartPattern) {
       for (let j = 0; j < cardRows.length; j++) {
         if (cardRows[j].join(' ').includes(cardConfig.cardTableStartPattern)) {
-          tableStart = j + 1;
+          tableStart = j; // header row index (0-based)
           break;
         }
       }
     } else {
-      tableStart = cardConfig.cardTableHeaderRow || 2;
+      // cardTableHeaderRow is relative to card start (1-based), convert to 0-based
+      tableStart = (cardConfig.cardTableHeaderRow || 3) - 1;
     }
+
+    if (tableStart < 0 || tableStart >= cardRows.length) continue;
 
     for (let j = tableStart + 1; j < cardRows.length; j++) {
       const row = cardRows[j];

@@ -333,7 +333,7 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
       // 自动检测卡片式结构（如"▶ 调拨记录 #1"）
       const cardStartMatch = autoDetectCardStructure(sheet.rows);
       if (cardStartMatch) {
-        const autoCardConfig = {
+        const autoCardConfig: CardConfig = {
           enabled: true,
           cardStartPattern: cardStartMatch.cardStartPattern,
           cardTableStartPattern: cardStartMatch.cardTableStartPattern,
@@ -869,7 +869,7 @@ function shouldSkipRow(row: any[], conditions?: SkipCondition[]): boolean {
 function autoDetectCardStructure(rows: any[][]): {
   cardStartPattern: string;
   cardTableStartPattern: string;
-  cardHeaderMapping: { field: string; type: string; regexPattern: string; group: number }[];
+  cardHeaderMapping: ColumnMap[];
 } | null {
   const cardMarkers: string[] = [];
   for (let i = 0; i < Math.min(rows.length, 50); i++) {
@@ -895,10 +895,10 @@ function autoDetectCardStructure(rows: any[][]): {
     cardStartPattern: '[▶▶▸►].*?(?:记录|调拨|运单|卡片|订单)',
     cardTableStartPattern: tableHeaderPattern,
     cardHeaderMapping: [
-      { field: 'storeName', type: 'regex', regexPattern: '调入门店[：:\\s]*([^\\s]+)', group: 1 },
-      { field: 'recipientName', type: 'regex', regexPattern: '收货人[：:\\s]*([^\\s]+)', group: 1 },
-      { field: 'recipientPhone', type: 'regex', regexPattern: '电话[：:\\s]*(\\d{11}|\\d{3}[-\\s]?\\d{8})', group: 1 },
-      { field: 'recipientAddress', type: 'regex', regexPattern: '收货地址[：:\\s]*(\\S+)', group: 1 },
+      { field: 'storeName', type: 'regex', regexPattern: '调入门店[：:\\s]*([^\\s]+)', regexGroup: 1 },
+      { field: 'recipientName', type: 'regex', regexPattern: '收货人[：:\\s]*([^\\s]+)', regexGroup: 1 },
+      { field: 'recipientPhone', type: 'regex', regexPattern: '电话[：:\\s]*(\\d{11}|\\d{3}[-\\s]?\\d{8})', regexGroup: 1 },
+      { field: 'recipientAddress', type: 'regex', regexPattern: '收货地址[：:\\s]*(\\S+)', regexGroup: 1 },
     ],
   };
 }
@@ -937,7 +937,7 @@ function parseCards(rule: ParseRule, rows: any[][], footerInfo: Record<string, s
         const cardStr = cardRows.map(r => r.join(' ')).join('\n');
         const match = cardStr.match(new RegExp(map.regexPattern));
         if (match) {
-          card.headerInfo[map.field] = match[map.group || 1] || match[0] || '';
+          card.headerInfo[map.field] = match[map.regexGroup || 1] || match[0] || '';
         }
       }
     }

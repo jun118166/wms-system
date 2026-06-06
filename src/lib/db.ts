@@ -188,7 +188,7 @@ export const db = {
     if (codes.length === 0) return [];
     await ensureInit();
     const db = getDb();
-    const rows = await db`SELECT external_code FROM orders WHERE external_code = ANY(${codes})`;
+    const rows = (await db`SELECT external_code FROM orders WHERE external_code = ANY(${codes})`) as any[];
     return rows.map(r => r.external_code);
   },
 };

@@ -76,7 +76,7 @@ export default function RuleSelector({ selectedRuleId, onSelect, onCreateNew, cu
           {filteredRules.map(rule => (
             <div
               key={rule.id}
-              onClick={() => onSelect(rule.id, rule.config || rule)}
+              onClick={() => onSelect(rule.id, rule)}
               className={clsx(
                 'p-3 rounded-lg border cursor-pointer transition-all',
                 selectedRuleId === rule.id

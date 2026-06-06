@@ -76,7 +76,7 @@ export const db = {
   async getRule(id: string) {
     await ensureInit();
     const db = getDb();
-    const rows = await db`SELECT * FROM parse_rules WHERE id = ${id}`;
+    const rows = (await db`SELECT * FROM parse_rules WHERE id = ${id}`) as any[];
     if (rows.length === 0) return null;
     const r = rows[0];
     return { ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config };

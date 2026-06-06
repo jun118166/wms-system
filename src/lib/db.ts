@@ -51,6 +51,9 @@ export async function initDatabase() {
   await db`CREATE INDEX IF NOT EXISTS idx_orders_external ON orders(external_code)`;
   await db`CREATE INDEX IF NOT EXISTS idx_orders_recipient ON orders(recipient_name)`;
   await db`CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at)`;
+  // Composite indexes for common query patterns
+  await db`CREATE INDEX IF NOT EXISTS idx_orders_external_created ON orders(external_code, created_at DESC)`;
+  await db`CREATE INDEX IF NOT EXISTS idx_orders_recipient_created ON orders(recipient_name, created_at DESC)`;
 
   initialized = true;
   return { success: true };
@@ -169,18 +172,40 @@ export const db = {
     const pageSize = params.pageSize || 20;
     const offset = (page - 1) * pageSize;
 
+    // Build WHERE clause dynamically
+    const conditions: string[] = [];
+    const values: any[] = [];
+    let paramIdx = 1;
+
+    if (params.externalCode) {
+      conditions.push(`external_code ILIKE $${paramIdx++}`);
+      values.push(`%${params.externalCode}%`);
+    }
+    if (params.recipientName) {
+      conditions.push(`recipient_name ILIKE $${paramIdx++}`);
+      values.push(`%${params.recipientName}%`);
+    }
+    if (params.dateFrom) {
+      conditions.push(`created_at >= $${paramIdx++}`);
+      values.push(params.dateFrom);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    // Use Promise.all for parallel count + data queries
     const [rows, countResult] = await Promise.all([
-      db`SELECT * FROM orders ORDER BY created_at DESC LIMIT ${pageSize} OFFSET ${offset}`,
-      db`SELECT COUNT(*) as total FROM orders`,
+      db(`SELECT * FROM orders ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`, [...values, pageSize, offset]),
+      db(`SELECT COUNT(*) as total FROM orders ${whereClause}`, values),
     ]);
 
     const countRows = countResult as any[];
+    const total = Number(countRows[0]?.total || 0);
     return {
       data: rows,
-      total: Number(countRows[0]?.total || 0),
+      total,
       page,
       pageSize,
-      totalPages: Math.ceil(Number(countRows[0]?.total || 0) / pageSize),
+      totalPages: Math.ceil(total / pageSize),
     };
   },
 

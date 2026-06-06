@@ -70,7 +70,7 @@ export const db = {
     await ensureInit();
     const db = getDb();
     const rows = await db`SELECT * FROM parse_rules ORDER BY updated_at DESC`;
-    return rows.map(r => ({ ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config }));
+    return (rows as any[]).map(r => ({ ...r, config: typeof r.config === 'string' ? JSON.parse(r.config) : r.config }));
   },
 
   async getRule(id: string) {

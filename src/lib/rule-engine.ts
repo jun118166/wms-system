@@ -149,6 +149,112 @@ function detectActualHeaderRow(rows: any[][], maxScan: number, columnMapping?: R
   return bestScore >= 4 ? bestIdx : -1;
 }
 
+/** 自动检测矩阵表格结构：表头包含多个门店/渠道名列，数据区为数量 */
+function autoDetectMatrixStructure(
+  headerRow: any[], dataRows: any[][], headerRowIdx: number
+): { detected: boolean; config?: any } {
+  if (!headerRow || headerRow.length < 5 || dataRows.length < 2) return { detected: false };
+
+  // 分析每列的特征：是"门店列"（短文本标题+数字数据）还是"元数据列"
+  const storeLikeCols: number[] = [];
+  const metaCols: number[] = [];
+
+  for (let c = 0; c < headerRow.length; c++) {
+    const header = String(headerRow[c] || '').trim();
+    if (!header) continue;
+
+    // 跳过汇总/元数据列
+    if (isSummaryColumn(header) || isMetadataColumn(header)) {
+      metaCols.push(c);
+      continue;
+    }
+
+    // 检查该列的数据是否为数字为主（门店列的单元格值应是数量）
+    let numericCount = 0;
+    let totalChecked = 0;
+    const sampleEnd = Math.min(dataRows.length, 15);
+    for (let r = 0; r < sampleEnd; r++) {
+      const cellVal = String(dataRows[r]?.[c] ?? '').trim();
+      if (!cellVal) continue;
+      totalChecked++;
+      if (/^\d+(\.\d+)?$/.test(cellVal)) numericCount++;
+    }
+
+    // 短列头（≤6字）且非汇总/元数据 → 很可能是门店名，放宽数值要求
+    const looksLikeStoreName = header.length <= 6 && header.length >= 2;
+    const minRatio = looksLikeStoreName ? 0.1 : 0.5;
+
+    if (totalChecked > 0 && numericCount / totalChecked >= minRatio) {
+      storeLikeCols.push(c);
+    } else if (header.length <= 20) {
+      // 短标题但非数字数据 → 可能是元数据列
+      metaCols.push(c);
+    }
+  }
+
+  // 至少3个门店列才认为是矩阵
+  if (storeLikeCols.length < 3) return { detected: false };
+
+  // 找到行标签列（最后一个非门店、非汇总的文本列，通常是SKU名称）
+  let rowLabelCol = -1;
+  let skuCodeCol = -1;
+  let externalCodeCol = -1;
+  let skuSpecCol = -1;
+
+  for (let c = 0; c < headerRow.length; c++) {
+    const header = String(headerRow[c] || '').trim();
+    if (storeLikeCols.includes(c)) continue;
+    if (isSummaryColumn(header)) continue;
+
+    const lower = header.toLowerCase();
+    if (/sku.*名|品名|物品名|商品名|产品名|名称/.test(lower) && rowLabelCol < 0) {
+      rowLabelCol = c;
+    } else if (/sku.*码|条码|编码|代码/.test(lower) && skuCodeCol < 0) {
+      skuCodeCol = c;
+    } else if (/外部.*编码|外部.*码|商品编码/.test(lower) && externalCodeCol < 0) {
+      externalCodeCol = c;
+    } else if (/规格|型号/.test(lower) && skuSpecCol < 0) {
+      skuSpecCol = c;
+    }
+  }
+
+  // 如果没找到明确的行标签列，取第一个非门店非汇总的文本列
+  if (rowLabelCol < 0) {
+    for (let c = 0; c < headerRow.length; c++) {
+      if (!storeLikeCols.includes(c) && !metaCols.includes(c)) {
+        const header = String(headerRow[c] || '').trim();
+        if (header && header.length <= 30) {
+          rowLabelCol = c;
+          break;
+        }
+      }
+    }
+  }
+
+  if (rowLabelCol < 0) return { detected: false };
+
+  const colHeaderStartCol = Math.min(...storeLikeCols) + 1; // 1-based
+  const rowFields: { field: string; col: number }[] = [];
+  if (skuCodeCol >= 0) rowFields.push({ field: 'skuCode', col: skuCodeCol + 1 });
+  if (externalCodeCol >= 0) rowFields.push({ field: 'externalCode', col: externalCodeCol + 1 });
+  if (skuSpecCol >= 0) rowFields.push({ field: 'skuSpec', col: skuSpecCol + 1 });
+
+  return {
+    detected: true,
+    config: {
+      enabled: true,
+      rowLabelField: 'skuName',
+      colHeaderStartCol,
+      colHeaderRow: headerRowIdx + 1, // 1-based
+      dataStartRow: headerRowIdx + 2, // 1-based, row after header
+      dataStartCol: rowLabelCol + 1,  // 1-based
+      colHeaderIsField: 'storeName',
+      transposeValueField: 'skuQuantity',
+      rowFields,
+    },
+  };
+}
+
 function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: string[]): OrderItem[] {
   const allItems: OrderItem[] = [];
 
@@ -160,10 +266,12 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
   }
 
   for (const sheet of sheetsToProcess) {
-    // Smart header detection: scan first headerRowsToSkip rows for the actual header
+    // Smart header detection: scan a generous range for the actual header
+    // AI might set headerRowsToSkip too low or too high, so we scan up to 10 rows
     let actualHeaderRowIdx = -1;
-    if (rule.headerRowsToSkip > 0) {
-      actualHeaderRowIdx = detectActualHeaderRow(sheet.rows, rule.headerRowsToSkip, rule.columnMapping);
+    const scanRange = Math.max(rule.headerRowsToSkip, Math.min(10, Math.floor(sheet.rows.length / 2)));
+    if (scanRange > 0) {
+      actualHeaderRowIdx = detectActualHeaderRow(sheet.rows, scanRange, rule.columnMapping);
     }
 
     let headerRow: any[];
@@ -196,10 +304,29 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
       const cardItems = parseCards(rule, sheet.rows, footerInfo, errors);
       allItems.push(...cardItems);
     } else if (rule.extractionMode === 'matrix' && rule.matrixConfig?.enabled) {
-      // Matrix transposition
+      // Matrix transposition (AI-configured)
       const matrixItems = parseMatrix(rule, sheet.rows, footerInfo, errors);
       allItems.push(...matrixItems);
     } else {
+      // 自动检测矩阵结构：如果表头有多个"门店列"（数据为数字），自动切换为矩阵模式
+      const headerIdxForMatrix = actualHeaderRowIdx >= 0 ? actualHeaderRowIdx : rule.headerRowsToSkip;
+      const matrixDataRows = sheet.rows.slice(headerIdxForMatrix + 1);
+      const matrixDetect = autoDetectMatrixStructure(headerRow, matrixDataRows, headerIdxForMatrix);
+
+      if (matrixDetect.detected && matrixDetect.config) {
+        // 自动矩阵模式
+        const autoRule: ParseRule = {
+          ...rule,
+          extractionMode: 'matrix',
+          matrixConfig: matrixDetect.config,
+        };
+        const matrixItems = parseMatrix(autoRule, sheet.rows, footerInfo, errors);
+        if (matrixItems.length > 0) {
+          allItems.push(...matrixItems);
+          continue; // 跳过标准行解析
+        }
+      }
+
       // Standard row-based extraction
       // Detect end of data (before footer or empty rows)
       const effectiveRows = dataRows.slice(0, dataRows.length - rule.footerRowsToSkip);
@@ -389,15 +516,24 @@ export function findColumnIndex(headerRow: any[], colName: string): number {
   if (!headerRow || headerRow.length === 0) return -1;
   const normalized = String(colName).trim().toLowerCase();
   
-  // 1. Exact match or substring match
+  // 1. Exact match
   for (let i = 0; i < headerRow.length; i++) {
     const cell = String(headerRow[i] || '').trim().toLowerCase();
-    if (cell === normalized || cell.includes(normalized) || normalized.includes(cell)) {
+    if (cell === normalized) return i;
+  }
+
+  // 2. Substring match (with cross-domain conflict protection)
+  for (let i = 0; i < headerRow.length; i++) {
+    const cell = String(headerRow[i] || '').trim().toLowerCase();
+    if (cell.includes(normalized) || normalized.includes(cell)) {
+      // Reject if the match is only due to a shared generic word (like "编码")
+      // while the specific qualifiers indicate different domains
+      if (hasCrossDomainConflict(normalized, cell)) continue;
       return i;
     }
   }
   
-  // 2. Keyword-based fuzzy match: extract key semantic words and match
+  // 3. Keyword-based fuzzy match: extract key semantic words and match
   const keywords = extractKeywords(normalized);
   if (keywords.length > 0) {
     for (let i = 0; i < headerRow.length; i++) {
@@ -406,12 +542,76 @@ export function findColumnIndex(headerRow: any[], colName: string): number {
       // If they share at least one meaningful keyword, it's a match
       const overlap = keywords.filter(k => cellKeywords.includes(k));
       if (overlap.length >= 1 && overlap[0].length >= 2) {
+        // Reject cross-domain fuzzy matches
+        if (hasCrossDomainConflict(normalized, cell)) continue;
         return i;
       }
     }
   }
   
   return -1;
+}
+
+/**
+ * 检测两个列名是否因特定关键词不同而不应匹配
+ * 防止"SKU编码"→"物品编码"、"外部编码"→"物品编码" 等错误映射
+ */
+function hasCrossDomainConflict(source: string, target: string): boolean {
+  // 跨域检测：SKU/物品域 vs 单据/订单域
+  const skuDomain = /sku|物品|商品|产品|货品|货号|品名|货物/;
+  const orderDomain = /外部|单号|单据|运单|订单|配送单|物流/;
+
+  if ((skuDomain.test(source) && orderDomain.test(target)) ||
+      (orderDomain.test(source) && skuDomain.test(target))) {
+    return true;
+  }
+
+  // 特定关键词冲突：双方各有对方没有的特定概念词（排除通用词"编码/code/编号"）
+  const synonymGroups = [
+    ['sku'],
+    ['物品', '商品', '产品', '货品', '货物'],
+    ['外部', '订单', '运单', '配送单', '单据'],
+    ['货号'],
+  ];
+
+  const sourceSpecifics = new Set<string>();
+  const targetSpecifics = new Set<string>();
+
+  for (const group of synonymGroups) {
+    const inSource = group.some(t => new RegExp(t, 'i').test(source));
+    const inTarget = group.some(t => new RegExp(t, 'i').test(target));
+    if (inSource && !inTarget) sourceSpecifics.add(group[0]);
+    if (inTarget && !inSource) targetSpecifics.add(group[0]);
+  }
+
+  if (sourceSpecifics.size > 0 && targetSpecifics.size > 0) {
+    return true;
+  }
+
+  // 组内字面量检测：双方都命中同一词组，但使用了组内不同的具体词
+  // 例如 "商品编码" vs "物品编码"（同组不同词 → 冲突）
+  // 但 "配送单号" vs "单据号" 不冲突（"单据" 是 "配送单" 的子串）
+  for (const group of synonymGroups) {
+    if (group.length < 2) continue;
+    const inSource = group.some(t => new RegExp(t, 'i').test(source));
+    const inTarget = group.some(t => new RegExp(t, 'i').test(target));
+    if (!inSource || !inTarget) continue;
+
+    // 取最长匹配项（最具体的词），避免子串重复匹配
+    const sourceBest = group
+      .filter(t => new RegExp(t, 'i').test(source))
+      .sort((a, b) => b.length - a.length)[0];
+    const targetBest = group
+      .filter(t => new RegExp(t, 'i').test(target))
+      .sort((a, b) => b.length - a.length)[0];
+    if (sourceBest !== targetBest &&
+        !sourceBest.includes(targetBest) &&
+        !targetBest.includes(sourceBest)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 /** 从列名中提取语义关键词 (如 "SKU物品编码" → ["编码", "sku"]) */
@@ -436,7 +636,7 @@ function extractKeywords(name: string): string[] {
     { regex: /规格|型号|规格型号/, alias: '规格' },
     { regex: /spec/i, alias: 'spec' },
     // External code
-    { regex: /外部|配送单号|运单号|订单号/, alias: '单号' },
+    { regex: /外部|配送单号|运单号|订单号|单据/, alias: '单号' },
     { regex: /code|编号/i, alias: 'code' },
     // Store
     { regex: /门店|店铺|收货门店/, alias: '门店' },
@@ -461,31 +661,92 @@ function extractKeywords(name: string): string[] {
   return keywords;
 }
 
+// Label aliases: different label texts that map to the same system field
+const FOOTER_LABEL_ALIASES: Record<string, string[]> = {
+  storeName: ['收货门店', '门店', '收货机构', '店铺', '客户名称', '收货单位'],
+  externalCode: ['单据号', '外部编码', '配送单号', '订单号', '运单号', '单据编号', '出库单号'],
+  recipientName: ['收货人', '收件人', '联系人', '收货联系人'],
+  recipientPhone: ['收货电话', '联系电话', '收件人电话', '手机', '收货手机', '联系人电话'],
+  recipientAddress: ['收货地址', '收件地址', '送货地址', '详细地址', '地址'],
+  remark: ['备注', '说明', '附注', '备注说明'],
+};
+
+/** 反向查找：给定一个标签文本，返回它属于哪个系统字段 */
+function resolveFieldAlias(label: string): string | null {
+  for (const [field, aliases] of Object.entries(FOOTER_LABEL_ALIASES)) {
+    if (aliases.includes(label)) return field;
+  }
+  return null;
+}
+
 function extractFooterInfo(config: FooterInfoExtraction, rows: any[][]): Record<string, string> {
   const info: Record<string, string> = {};
   if (!config.enabled) return info;
 
-  // Look at the last N rows for footer info
-  const footerRows = rows.slice(-10);
-
+  // Search ALL rows (not just last 10) — footer/header info can be anywhere
   for (const mapping of config.mappings) {
-    for (const row of footerRows) {
-      const rowStr = row.join(' ').trim();
-      if (!rowStr) continue;
+    for (const row of rows) {
+      if (!row || row.length === 0) continue;
 
       if (config.searchPattern === 'label_value' && mapping.label) {
-        // Search for label pattern like "收件人：张三"
-        const pattern = mapping.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`${pattern}[：:\\s]*(\\S+)`, 'i');
-        const match = rowStr.match(regex);
-        if (match) {
-          const valuePart = rowStr.substring(match.index! + match[0].length - (match[1]?.length || 0));
-          info[mapping.field] = (match[1] || valuePart).trim();
+        const label = mapping.label.trim();
+
+        // Strategy 1: Cell-by-cell matching (most reliable)
+        // Look for a cell that IS the label, with the value in the NEXT cell
+        for (let c = 0; c < row.length; c++) {
+          const cellText = String(row[c] || '').trim();
+          if (!cellText) continue;
+
+          // Exact label match — value is in the next cell
+          if (cellText === label || cellText === label + '：' || cellText === label + ':') {
+            if (c + 1 < row.length) {
+              const value = String(row[c + 1] || '').trim();
+              if (value && value !== label) {
+                info[mapping.field] = value;
+                break;
+              }
+            }
+          }
+
+          // Cell starts with label + separator (like "收货人：张锦峰" in one cell)
+          if (cellText.startsWith(label + '：') || cellText.startsWith(label + ':') || cellText.startsWith(label + ' ')) {
+            // But ensure this isn't a LONGER label (e.g., "收货人签字" when label is "收货人")
+            const charAfterLabel = cellText[label.length];
+            if (charAfterLabel === '：' || charAfterLabel === ':' || charAfterLabel === ' ') {
+              const value = cellText.substring(label.length + 1).trim();
+              if (value) {
+                info[mapping.field] = value;
+                break;
+              }
+            }
+          }
+        }
+
+        // Strategy 2: Fallback to regex on joined row string (for backward compatibility)
+        if (!info[mapping.field]) {
+          const rowStr = row.join(' ').trim();
+          if (rowStr) {
+            const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`${escapedLabel}[：:\\s]+(\\S+)`, 'i');
+            const match = rowStr.match(regex);
+            if (match && match[1]) {
+              // Verify the match isn't from a longer label
+              const matchIdx = rowStr.indexOf(match[0]);
+              const charBefore = matchIdx > 0 ? rowStr[matchIdx - 1] : '';
+              // If there's a Chinese character right before the label, it might be a longer label — skip
+              if (!charBefore || /[\s,，;；|]/.test(charBefore)) {
+                info[mapping.field] = match[1].trim();
+              }
+            }
+          }
         }
       } else if (config.searchPattern === 'regex' && mapping.regex) {
-        const match = rowStr.match(new RegExp(mapping.regex));
-        if (match) {
-          info[mapping.field] = match[1] || match[0] || '';
+        const rowStr = row.join(' ').trim();
+        if (rowStr) {
+          const match = rowStr.match(new RegExp(mapping.regex));
+          if (match) {
+            info[mapping.field] = match[1] || match[0] || '';
+          }
         }
       } else if (config.searchPattern === 'fixed_position') {
         if (mapping.rowOffset !== undefined && mapping.colOffset !== undefined) {
@@ -494,6 +755,56 @@ function extractFooterInfo(config: FooterInfoExtraction, rows: any[][]): Record<
             info[mapping.field] = String(targetRow[mapping.colOffset] || '');
           }
         }
+      }
+
+      // Stop searching once we found a value for this mapping
+      if (info[mapping.field]) break;
+    }
+  }
+
+  // Phase 2: For fields that are still empty, try ALIAS labels
+  // e.g., if "收货门店" didn't match, try "收货机构", "门店", etc.
+  for (const mapping of config.mappings) {
+    if (info[mapping.field]) continue; // already found
+
+    const aliases = FOOTER_LABEL_ALIASES[mapping.field];
+    if (!aliases) continue;
+
+    // Try each alias (skip the one that matches the configured label)
+    for (const alias of aliases) {
+      if (alias === mapping.label) continue; // already tried
+      if (info[mapping.field]) break;
+
+      for (const row of rows) {
+        if (!row || row.length === 0) continue;
+        for (let c = 0; c < row.length; c++) {
+          const cellText = String(row[c] || '').trim();
+          if (!cellText) continue;
+
+          // Exact alias match — value in next cell
+          if (cellText === alias || cellText === alias + '：' || cellText === alias + ':') {
+            if (c + 1 < row.length) {
+              const value = String(row[c + 1] || '').trim();
+              if (value && !value.includes('：') && !value.includes(':')) {
+                info[mapping.field] = value;
+                break;
+              }
+            }
+          }
+
+          // Alias + separator in same cell
+          if (cellText.startsWith(alias + '：') || cellText.startsWith(alias + ':')) {
+            const charAfter = cellText[alias.length];
+            if (charAfter === '：' || charAfter === ':') {
+              const value = cellText.substring(alias.length + 1).trim();
+              if (value) {
+                info[mapping.field] = value;
+                break;
+              }
+            }
+          }
+        }
+        if (info[mapping.field]) break;
       }
     }
   }
@@ -586,6 +897,30 @@ function parseCards(rule: ParseRule, rows: any[][], footerInfo: Record<string, s
 
 // ===== Matrix Parsing =====
 
+// 矩阵列头过滤：排除汇总列和元数据列（如"在库数量的总和""SKU条码"等）
+const MATRIX_COL_SUMMARY_PATTERNS = [
+  /总和$/, /合计$/, /小计$/, /总计$/, /结余$/, /余额$/,
+  /数量.*的/, /的.*总和/, /的.*合计/,
+  /在库/, /可用/, /待移入/, /分配/, /冻结/,
+  /库存/, /仓库/, /货主/,
+];
+
+// 矩阵列头过滤：排除SKU元数据列（非门店名）
+const MATRIX_COL_METADATA_PATTERNS = [
+  /^sku(名称|条码|编码|名称)$/i,
+  /^外部(商品)?编码$/,
+  /^(仓库|货主|库存|规格|单位|状态|分类|品牌|产地)/,
+  /名称$|^编码$|^条码$|^编号$/,
+];
+
+function isSummaryColumn(header: string): boolean {
+  return MATRIX_COL_SUMMARY_PATTERNS.some(p => p.test(header));
+}
+
+function isMetadataColumn(header: string): boolean {
+  return MATRIX_COL_METADATA_PATTERNS.some(p => p.test(header));
+}
+
 function parseMatrix(rule: ParseRule, rows: any[][], footerInfo: Record<string, string>, errors: string[]): OrderItem[] {
   const items: OrderItem[] = [];
   const mc = rule.matrixConfig!;
@@ -595,13 +930,40 @@ function parseMatrix(rule: ParseRule, rows: any[][], footerInfo: Record<string, 
   const colHeaders: { idx: number; value: string }[] = [];
   for (let c = mc.colHeaderStartCol - 1; c < headerRow.length; c++) {
     const val = String(headerRow[c] || '').trim();
-    if (val) colHeaders.push({ idx: c, value: val });
+    if (!val || isSummaryColumn(val) || isMetadataColumn(val)) continue;
+
+    // 数据驱动检测：门店列的单元格值应以数字为主
+    // 抽样前几行数据，如果该列大部分值不是数字则跳过
+    let numericCount = 0;
+    let totalChecked = 0;
+    const sampleEnd = Math.min(rows.length, mc.dataStartRow - 1 + 10);
+    for (let sr = mc.dataStartRow - 1; sr < sampleEnd; sr++) {
+      const cellVal = String(rows[sr]?.[c] ?? '').trim();
+      if (!cellVal) continue;
+      totalChecked++;
+      if (/^\d+(\.\d+)?$/.test(cellVal)) numericCount++;
+    }
+    // 短列头（≤6字）很可能是门店名，放宽要求
+    const looksLikeStoreName = val.length <= 6 && val.length >= 2;
+    const minRatio = looksLikeStoreName ? 0.1 : 0.5;
+    if (totalChecked > 0 && numericCount / totalChecked < minRatio) continue;
+
+    colHeaders.push({ idx: c, value: val });
   }
 
   for (let r = mc.dataStartRow - 1; r < rows.length; r++) {
     const row = rows[r];
     const rowLabel = String(row[mc.dataStartCol - 1] || '').trim();
     if (!rowLabel) continue;
+
+    // 提取额外的行级字段（如 skuCode, skuSpec 等）
+    const rowFieldValues: Record<string, string> = {};
+    if (mc.rowFields && mc.rowFields.length > 0) {
+      for (const rf of mc.rowFields) {
+        const colIdx = rf.col - 1; // 1-based to 0-based
+        rowFieldValues[rf.field] = String(row[colIdx] || '').trim();
+      }
+    }
 
     for (const ch of colHeaders) {
       const cellValue = String(row[ch.idx] || '').trim();
@@ -634,6 +996,10 @@ function parseMatrix(rule: ParseRule, rows: any[][], footerInfo: Record<string, 
             };
             (item as any)[mc.rowLabelField] = rowLabel;
             (item as any)[mc.colHeaderIsField] = ch.value;
+            // 应用行级字段
+            for (const [field, value] of Object.entries(rowFieldValues)) {
+              (item as any)[field] = value;
+            }
             items.push(item);
           }
         }
@@ -652,6 +1018,10 @@ function parseMatrix(rule: ParseRule, rows: any[][], footerInfo: Record<string, 
           ...footerInfo,
         };
         (item as any)[mc.colHeaderIsField] = ch.value;
+        // 应用行级字段
+        for (const [field, value] of Object.entries(rowFieldValues)) {
+          (item as any)[field] = value;
+        }
         items.push(item);
       }
     }
@@ -801,18 +1171,17 @@ export function validateOrderItems(items: OrderItem[]): OrderItem[] {
   return items.map((item, idx) => {
     const errors: any[] = [];
 
-    // Check A组 (门店模式) vs B组 (收件人模式) - at least one group required
-    const hasGroupA = !!item.storeName;
-    const hasGroupB = !!(item.recipientName && item.recipientPhone && item.recipientAddress);
-    if (!hasGroupA && !hasGroupB) {
-      errors.push({ rowIndex: idx, field: 'storeName/recipientInfo', message: '门店信息(A组)或收件人信息(B组)至少填写一组' });
-    }
-
     // Required fields
     if (!item.skuCode) errors.push({ rowIndex: idx, field: 'skuCode', message: 'SKU编码不能为空' });
     if (!item.skuName) errors.push({ rowIndex: idx, field: 'skuName', message: 'SKU名称不能为空' });
     if (!item.skuQuantity || item.skuQuantity <= 0) {
       errors.push({ rowIndex: idx, field: 'skuQuantity', message: '发货数量必须为正数' });
+    }
+
+    // 门店/收件人信息：至少填写一项（门店名 或 收件人姓名 或 收件人电话）
+    const hasAnyRecipient = !!(item.storeName || item.recipientName || item.recipientPhone);
+    if (!hasAnyRecipient) {
+      errors.push({ rowIndex: idx, field: 'storeName', message: '请填写收货门店或收件人信息' });
     }
 
     // Phone format validation

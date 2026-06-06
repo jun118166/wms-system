@@ -112,16 +112,51 @@ export const db = {
   async insertOrders(orders: any[]) {
     await ensureInit();
     const db = getDb();
-    const results = [];
-    for (const o of orders) {
+
+    // Batch insert: 分批插入，每批最多 100 条，显著减少数据库往返
+    const BATCH_SIZE = 100;
+    const results: { success: boolean; id: string; error?: string }[] = [];
+
+    for (let i = 0; i < orders.length; i += BATCH_SIZE) {
+      const batch = orders.slice(i, i + BATCH_SIZE);
       try {
-        await db`
-          INSERT INTO orders (id, batch_id, external_code, store_name, recipient_name, recipient_phone, recipient_address, sku_code, sku_name, sku_quantity, sku_spec, remark)
-          VALUES (${o.id}, ${o.batchId}, ${o.externalCode}, ${o.storeName}, ${o.recipientName}, ${o.recipientPhone}, ${o.recipientAddress}, ${o.skuCode}, ${o.skuName}, ${o.skuQuantity}, ${o.skuSpec}, ${o.remark})
-        `;
-        results.push({ success: true, id: o.id });
+        if (batch.length === 1) {
+          // Single row - use simple tagged template
+          const o = batch[0];
+          await db`
+            INSERT INTO orders (id, batch_id, external_code, store_name, recipient_name, recipient_phone, recipient_address, sku_code, sku_name, sku_quantity, sku_spec, remark)
+            VALUES (${o.id}, ${o.batchId}, ${o.externalCode}, ${o.storeName}, ${o.recipientName}, ${o.recipientPhone}, ${o.recipientAddress}, ${o.skuCode}, ${o.skuName}, ${o.skuQuantity}, ${o.skuSpec}, ${o.remark})
+          `;
+          results.push({ success: true, id: o.id });
+        } else {
+          // Multi-row batch INSERT: 一条 SQL 插入多行
+          const cols = 'id, batch_id, external_code, store_name, recipient_name, recipient_phone, recipient_address, sku_code, sku_name, sku_quantity, sku_spec, remark';
+          const placeholders: string[] = [];
+          const values: any[] = [];
+          for (let j = 0; j < batch.length; j++) {
+            const o = batch[j];
+            const base = j * 12 + 1;
+            placeholders.push(`($${base},$${base+1},$${base+2},$${base+3},$${base+4},$${base+5},$${base+6},$${base+7},$${base+8},$${base+9},$${base+10},$${base+11})`);
+            values.push(o.id, o.batchId, o.externalCode, o.storeName, o.recipientName, o.recipientPhone, o.recipientAddress, o.skuCode, o.skuName, o.skuQuantity, o.skuSpec, o.remark);
+          }
+          await db(`INSERT INTO orders (${cols}) VALUES ${placeholders.join(',')}`, values);
+          for (const o of batch) {
+            results.push({ success: true, id: o.id });
+          }
+        }
       } catch (err: any) {
-        results.push({ success: false, id: o.id, error: err.message });
+        // 批量失败时回退为逐条插入，保证成功的行仍被写入
+        for (const o of batch) {
+          try {
+            await db`
+              INSERT INTO orders (id, batch_id, external_code, store_name, recipient_name, recipient_phone, recipient_address, sku_code, sku_name, sku_quantity, sku_spec, remark)
+              VALUES (${o.id}, ${o.batchId}, ${o.externalCode}, ${o.storeName}, ${o.recipientName}, ${o.recipientPhone}, ${o.recipientAddress}, ${o.skuCode}, ${o.skuName}, ${o.skuQuantity}, ${o.skuSpec}, ${o.remark})
+            `;
+            results.push({ success: true, id: o.id });
+          } catch (e2: any) {
+            results.push({ success: false, id: o.id, error: e2.message });
+          }
+        }
       }
     }
     return results;

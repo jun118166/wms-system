@@ -105,15 +105,22 @@ export default function HomePage() {
         // Validate
         let validated = validateOrderItems(result.data);
 
-        // Check duplicates
+        // Check duplicates - 只在有外部编码时检查
         try {
           const codes = validated.map(o => o.externalCode).filter(Boolean);
           if (codes.length > 0) {
-            const dupRes = await fetch('/api/orders?page=1&pageSize=10000');
-            const dupData = await dupRes.json();
-            const existingOrders = dupData?.data?.data || [];
-            const existingCodes = existingOrders.map((o: any) => o.external_code).filter(Boolean);
-            validated = findDuplicates(validated, existingCodes);
+            const dupRes = await fetch('/api/orders/check-duplicates', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ codes }),
+            });
+            if (dupRes.ok) {
+              const dupData = await dupRes.json();
+              const existingCodes = dupData.existingCodes || [];
+              if (existingCodes.length > 0) {
+                validated = findDuplicates(validated, existingCodes);
+              }
+            }
           }
         } catch {}
 

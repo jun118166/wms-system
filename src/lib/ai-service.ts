@@ -73,7 +73,11 @@ export async function generateRuleFromAI(request: AiGenerateRequest): Promise<Ai
     "dataStartRow": number,
     "dataStartCol": number,
     "colHeaderIsField": "storeName",
-    "transposeValueField": "skuQuantity"
+    "transposeValueField": "skuQuantity",
+    "rowFields": [
+      { "field": "skuCode", "col": 4 },
+      { "field": "skuSpec", "col": 8 }
+    ]
   },
   
   // 卡片识别（非标准表格，每条记录独立区域）
@@ -116,6 +120,17 @@ export async function generateRuleFromAI(request: AiGenerateRequest): Promise<Ai
   
   "description": "规则说明"
 }
+
+矩阵模式识别要点：
+- 当表头行出现多个类似门店名称的列（如"银泰""金桥""门店B"等），且单元格内容是数字/数量时，这是SKU×门店矩阵表
+- 矩阵模式下extractionMode设为"matrix"，matrixConfig.enabled设为true
+- colHeaderRow: 列头所在行号（1-based），即门店名所在的行
+- colHeaderStartCol: 门店列起始列号（1-based）
+- dataStartCol: SKU行标签所在列号（1-based），通常是SKU名称列
+- rowLabelField: 行标签对应字段，通常是"skuName"
+- rowFields: 额外行级字段数组，col为列号（1-based），如SKU编码、规格等。系统字段可选：externalCode, skuCode, skuSpec, remark
+- 矩阵左侧的非门店列（如仓库名称、货主名称、库存状态等）不需要映射，只提取SKU相关字段
+- 跳过全为0或空的数量列（如"在库数量的总和""冻结数量的总和"等汇总列），只保留门店列
 
 请分析以下文件预览数据，输出JSON格式的解析规则，以及你的分析说明和每个字段映射的置信度。`;
 

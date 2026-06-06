@@ -28,14 +28,16 @@ export async function POST(req: NextRequest) {
       }, { status: 400 });
     }
 
-    // Check duplicate external codes
-    const codes = orders.map(o => o.externalCode).filter(Boolean);
-    const existingCodes = await db.checkDuplicateExternalCodes(codes);
-    if (existingCodes.length > 0) {
-      return NextResponse.json({
-        success: false,
-        error: `以下外部编码已存在: ${existingCodes.join(', ')}`,
-      }, { status: 400 });
+    // Check duplicate external codes (skip if no codes present)
+    const codes = orders.map((o: OrderItem) => o.externalCode).filter(Boolean);
+    if (codes.length > 0) {
+      const existingCodes = await db.checkDuplicateExternalCodes(codes);
+      if (existingCodes.length > 0) {
+        return NextResponse.json({
+          success: false,
+          error: `以下外部编码已存在: ${existingCodes.join(', ')}`,
+        }, { status: 400 });
+      }
     }
 
     // Insert orders

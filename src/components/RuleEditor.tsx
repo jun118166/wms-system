@@ -162,6 +162,7 @@ export default function RuleEditor({ fileName, fileType, previewData, initialRul
         dataStartCol: matrixConfig.dataStartCol || 1,
         colHeaderIsField: matrixConfig.colHeaderIsField || 'storeName',
         transposeValueField: matrixConfig.transposeValueField || 'skuQuantity',
+        rowFields: matrixConfig.rowFields || [],
       } : undefined,
       cardConfig: undefined,
       textConfig: undefined,
@@ -563,6 +564,7 @@ export default function RuleEditor({ fileName, fileType, previewData, initialRul
                   <span className="text-xs text-gray-400">（门店/日期作为列头横向排列）</span>
                 </label>
                 {matrixEnabled && (
+                  <>
                   <div className="grid grid-cols-2 gap-3 mt-3">
                     <div>
                       <label className="text-xs text-gray-500">行标签字段</label>
@@ -631,6 +633,55 @@ export default function RuleEditor({ fileName, fileType, previewData, initialRul
                       />
                     </div>
                   </div>
+                  {/* 行级额外字段 (rowFields) */}
+                  <div className="mt-3">
+                    <label className="text-xs text-gray-500 block mb-1">行级额外字段（如 SKU编码、外部编码 等）</label>
+                    {(matrixConfig.rowFields || []).map((rf, idx) => (
+                      <div key={idx} className="flex gap-2 mb-1 items-center">
+                        <input
+                          type="text"
+                          value={rf.field}
+                          onChange={e => {
+                            const updated = [...(matrixConfig.rowFields || [])];
+                            updated[idx] = { ...updated[idx], field: e.target.value };
+                            setMatrixConfig(prev => ({ ...prev, rowFields: updated }));
+                          }}
+                          placeholder="字段名 (如 skuCode)"
+                          className="input-field flex-1"
+                        />
+                        <input
+                          type="number"
+                          value={rf.col}
+                          onChange={e => {
+                            const updated = [...(matrixConfig.rowFields || [])];
+                            updated[idx] = { ...updated[idx], col: Number(e.target.value) };
+                            setMatrixConfig(prev => ({ ...prev, rowFields: updated }));
+                          }}
+                          placeholder="列号"
+                          className="input-field w-20"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const updated = [...(matrixConfig.rowFields || [])];
+                            updated.splice(idx, 1);
+                            setMatrixConfig(prev => ({ ...prev, rowFields: updated }));
+                          }}
+                          className="text-red-400 hover:text-red-600 text-sm px-1"
+                        >
+                          &times;
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => setMatrixConfig(prev => ({ ...prev, rowFields: [...(prev.rowFields || []), { field: '', col: 1 }] }))}
+                      className="text-xs text-primary hover:underline mt-1"
+                    >
+                      + 添加行字段
+                    </button>
+                  </div>
+                  </>
                 )}
               </div>
 

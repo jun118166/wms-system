@@ -71,6 +71,7 @@ export interface MatrixConfig {
   dataStartCol: number;      // 行标签列
   colHeaderIsField: string;  // 列头映射到哪个字段（如 storeName）
   transposeValueField: string; // 单元格值映射到哪个字段（如 skuQuantity）
+  rowFields?: { field: string; col: number }[]; // 额外的行级字段（如 [{field:'skuCode', col:4}]）
 }
 
 /** 卡片识别配置 */

@@ -87,6 +87,68 @@ export async function parseExcelBuffer(buffer: ArrayBuffer, fileName: string): P
   return { fileName, fileType: 'excel', sheets, rows: sheets[0]?.rows };
 }
 
+/** 智能检测实际表头行：在 headerRowsToSkip 范围内的行中，找到最像表头的行 */
+function detectActualHeaderRow(rows: any[][], maxScan: number, columnMapping?: Record<string, ColumnMap>): number {
+  const sourceColumns = columnMapping
+    ? Object.values(columnMapping).map(m => m.sourceColumn).filter(Boolean)
+    : [];
+
+  // Common column header keywords (Chinese & English)
+  const headerKeywords = [
+    '序号', '编号', '编码', '品名', '名称', '数量', '规格', '型号', '单位',
+    '单价', '金额', '备注', '仓库', '日期',
+    'code', 'name', 'qty', 'quantity', 'spec', 'sku', 'price', 'remark',
+  ];
+
+  let bestIdx = -1;
+  let bestScore = 0;
+  const scanEnd = Math.min(maxScan, rows.length);
+
+  for (let i = 0; i < scanEnd; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+
+    let score = 0;
+    let nonEmptyCells = 0;
+
+    for (const cell of row) {
+      const cellText = String(cell || '').trim();
+      if (!cellText) continue;
+      nonEmptyCells++;
+
+      // Check against known source column names from columnMapping (highest priority)
+      for (const src of sourceColumns) {
+        if (src && (cellText.includes(src) || src.includes(cellText))) {
+          score += 3;
+        }
+      }
+
+      // Check against generic header keywords
+      const lowerCell = cellText.toLowerCase();
+      for (const kw of headerKeywords) {
+        if (cellText === kw || (cellText.length <= 10 && cellText.includes(kw))) {
+          score += 1;
+          break;
+        }
+      }
+
+      // Penalize cells that look like data values (numbers, product codes, etc.)
+      if (/^\d+$/.test(cellText)) score -= 1;
+    }
+
+    // Prefer rows with more non-empty cells (real headers tend to have many columns)
+    if (nonEmptyCells >= 4) score += nonEmptyCells;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = i;
+    }
+  }
+
+  // Require a minimum score to confirm it's a header (at least 2 keyword matches)
+  return bestScore >= 4 ? bestIdx : -1;
+}
+
 function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: string[]): OrderItem[] {
   const allItems: OrderItem[] = [];
 
@@ -98,11 +160,32 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
   }
 
   for (const sheet of sheetsToProcess) {
-    // Skip header rows
-    const dataRows = sheet.rows.slice(rule.headerRowsToSkip);
+    // Smart header detection: scan first headerRowsToSkip rows for the actual header
+    let actualHeaderRowIdx = -1;
+    if (rule.headerRowsToSkip > 0) {
+      actualHeaderRowIdx = detectActualHeaderRow(sheet.rows, rule.headerRowsToSkip, rule.columnMapping);
+    }
+
+    let headerRow: any[];
+    let dataRows: any[][];
+
+    if (actualHeaderRowIdx >= 0) {
+      // Found actual header in skipped area — use it and start data from next row
+      headerRow = sheet.rows[actualHeaderRowIdx];
+      dataRows = sheet.rows.slice(actualHeaderRowIdx + 1);
+    } else {
+      // Fallback to original behavior
+      dataRows = sheet.rows.slice(rule.headerRowsToSkip);
+      if (dataRows.length === 0) continue;
+
+      // After trimming footer, try to use the first remaining row as header
+      const effectiveForHeader = dataRows.slice(0, dataRows.length - rule.footerRowsToSkip);
+      headerRow = effectiveForHeader.length > 0 ? effectiveForHeader[0] : [];
+    }
+
     if (dataRows.length === 0) continue;
 
-    // Extract footer info if configured
+    // Extract footer info if configured (uses ALL original rows)
     let footerInfo: Record<string, string> = {};
     if (rule.footerInfoExtraction?.enabled) {
       footerInfo = extractFooterInfo(rule.footerInfoExtraction, sheet.rows);
@@ -121,14 +204,14 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
       // Detect end of data (before footer or empty rows)
       const effectiveRows = dataRows.slice(0, dataRows.length - rule.footerRowsToSkip);
 
-      const headerRow = effectiveRows.length > 0 ? effectiveRows[0] : [];
       let dataStartIdx = 0;
 
-      // Try to identify if first row is header by checking against column mapping
-      const hasHeader = rule.columnMapping && Object.keys(rule.columnMapping).length > 0;
-
-      if (hasHeader && effectiveRows.length > 1) {
-        dataStartIdx = 1; // Skip header row
+      // If we didn't do smart detection, try to skip header row in data
+      if (actualHeaderRowIdx < 0) {
+        const hasHeader = rule.columnMapping && Object.keys(rule.columnMapping).length > 0;
+        if (hasHeader && effectiveRows.length > 1) {
+          dataStartIdx = 1; // Skip header row
+        }
       }
 
       for (let i = dataStartIdx; i < effectiveRows.length; i++) {
@@ -136,7 +219,7 @@ function parseExcelWithRule(rule: ParseRule, rawData: RawFileData, errors: strin
         if (shouldSkipRow(row, rule.skipConditions)) continue;
         if (row.every((cell: any) => !cell || cell === '')) continue; // Skip empty rows
 
-        const item = mapRowToOrder(row, headerRow, rule, footerInfo, sheet.name, i + rule.headerRowsToSkip);
+        const item = mapRowToOrder(row, headerRow, rule, footerInfo, sheet.name, i + (actualHeaderRowIdx >= 0 ? actualHeaderRowIdx + 1 : rule.headerRowsToSkip));
         if (item) allItems.push(item);
       }
     }
@@ -275,9 +358,9 @@ function mapRowToOrder(
 /** 当显式列名匹配失败时，根据目标字段自动检测列索引 */
 export function autoDetectColumn(headerRow: any[], field: string): number {
   const fieldPatterns: Record<string, RegExp[]> = {
-    skuCode: [/编码|code|货号/i, /sku.*码|物品.*码/i],
-    skuName: [/名称|品名|name/i, /物品|商品|货品|产品/],
-    skuQuantity: [/数量|件数|个数|qty|quantity/i],
+    skuCode: [/编码|code|货号/i, /sku.*码|物品.*码|产品.*码|商品.*码/i, /^sku$/i],
+    skuName: [/名称|品名|name/i, /物品|商品|货品|产品/, /sku.*名|物品名/i],
+    skuQuantity: [/数量|件数|个数|qty|quantity/i, /出库|发货|出货/i],
     skuSpec: [/规格|型号|spec/i],
     externalCode: [/单号|运单|订单|外部/i],
     storeName: [/门店|店铺|收货门店/i],
@@ -341,10 +424,13 @@ function extractKeywords(name: string): string[] {
     { regex: /编码/, alias: '编码' },
     { regex: /sku/i, alias: 'sku' },
     { regex: /物品|商品|产品|货品/, alias: '物品' },
+    { regex: /货号/, alias: '货号' },
     // Name related
     { regex: /名称|品名/, alias: '名称' },
+    { regex: /物品名|商品名|产品名/, alias: '品名' },
     // Quantity related
     { regex: /数量|件数|个数|数目/, alias: '数量' },
+    { regex: /出库|发货|出货/, alias: '出库' },
     { regex: /qty|quantity/i, alias: 'qty' },
     // Spec/Model related
     { regex: /规格|型号|规格型号/, alias: '规格' },
@@ -360,6 +446,10 @@ function extractKeywords(name: string): string[] {
     { regex: /地址/, alias: '地址' },
     // Remark
     { regex: /备注|说明|附注/, alias: '备注' },
+    // Other common columns
+    { regex: /单位/, alias: '单位' },
+    { regex: /仓库/, alias: '仓库' },
+    { regex: /序号/, alias: '序号' },
   ];
   
   for (const p of patterns) {

@@ -12,7 +12,7 @@ const presets = [
       sourceType: 'excel',
       extractionMode: 'row',
       headerRowsToSkip: 3,
-      footerRowsToSkip: 6,
+      footerRowsToSkip: 0,
       multiSheetMode: 'merge',
       groupByField: '',
       footerInfoExtraction: {
@@ -35,6 +35,12 @@ const presets = [
       skipConditions: [
         { condition: 'row_contains', pattern: '合计' },
         { condition: 'row_contains', pattern: '小计' },
+        { condition: 'row_contains', pattern: '制单人' },
+        { condition: 'row_contains', pattern: '审核人' },
+        { condition: 'row_contains', pattern: '签字' },
+        { condition: 'row_contains', pattern: '收货门店' },
+        { condition: 'row_contains', pattern: '联系电话' },
+        { condition: 'row_contains', pattern: '收货地址' },
       ],
       defaultValues: {},
       staticValues: {},

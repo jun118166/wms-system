@@ -174,12 +174,13 @@ export const db = {
       db`SELECT COUNT(*) as total FROM orders`,
     ]);
 
+    const countRows = countResult as any[];
     return {
       data: rows,
-      total: Number(countResult[0]?.total || 0),
+      total: Number(countRows[0]?.total || 0),
       page,
       pageSize,
-      totalPages: Math.ceil(Number(countResult[0]?.total || 0) / pageSize),
+      totalPages: Math.ceil(Number(countRows[0]?.total || 0) / pageSize),
     };
   },
 

@@ -134,26 +134,87 @@ export async function POST(req: NextRequest) {
       };
       result = await applyRule(rule, rawData);
     } else if (fileName.endsWith('.pdf')) {
-      // For PDF, we'll handle on the server side
+      // PDF: extract text items with positions, rebuild table structure
       let pdfjsLib: any;
       try {
         pdfjsLib = await import('pdfjs-dist');
         const pdfData = new Uint8Array(buffer);
         const loadingTask = pdfjsLib.getDocument({ data: pdfData });
         const pdf = await loadingTask.promise;
-        const pages: string[] = [];
+        
+        const allPdfRows: any[][] = [];
+        
         for (let i = 1; i <= pdf.numPages; i++) {
           const page = await pdf.getPage(i);
           const textContent = await page.getTextContent();
-          const pageText = textContent.items.map((item: any) => item.str).join(' ');
-          pages.push(pageText);
+          
+          // Group text items by Y-position (rows) with tolerance
+          const yTolerance = 5;
+          const rowMap = new Map<number, { y: number; items: { x: number; text: string }[] }>();
+          
+          for (const item of textContent.items) {
+            const y = Math.round(item.transform[5]);
+            const x = Math.round(item.transform[4]);
+            const text = (item.str || '').trim();
+            if (!text) continue;
+            
+            // Find existing row within tolerance
+            let foundKey: number | null = null;
+            for (const [key, row] of rowMap) {
+              if (Math.abs(key - y) <= yTolerance) {
+                foundKey = key;
+                break;
+              }
+            }
+            
+            const key = foundKey ?? y;
+            if (!rowMap.has(key)) {
+              rowMap.set(key, { y: key, items: [] });
+            }
+            rowMap.get(key)!.items.push({ x, text });
+          }
+          
+          // Sort rows by Y (top to bottom) and convert to columns
+          const sortedRows = [...rowMap.values()].sort((a, b) => a.y - b.y);
+          for (const row of sortedRows) {
+            // Sort items by X (left to right)
+            row.items.sort((a, b) => a.x - b.x);
+            const cells = row.items.map(it => it.text);
+            allPdfRows.push(cells);
+          }
         }
+        
+        // Convert to sheets format
+        const rawText = allPdfRows.map(r => r.join('\t')).join('\n');
+        
+        // Split into header area and table area based on table header detection
         const rawData = {
           fileName: file.name,
           fileType: 'pdf' as const,
-          sheets: [{ name: 'pdf', rows: pages.map(p => [p]), rowsCount: pages.length, colsCount: 1 }],
-          rawText: pages.join('\n'),
+          sheets: [{
+            name: 'pdf',
+            rows: allPdfRows,
+            rowsCount: allPdfRows.length,
+            colsCount: Math.max(...allPdfRows.map(r => r.length), 0),
+          }],
+          rawText,
         };
+        
+        // Capture debug info
+        if (allPdfRows.length > 0) {
+          const dataSlice = allPdfRows.slice(rule.headerRowsToSkip || 0, (rule.headerRowsToSkip || 0) + 5);
+          parseTrace = {
+            ...parseTrace,
+            pdfRows: allPdfRows.length,
+            pdfSample: dataSlice.map(r => r.slice(0, 8)),
+          };
+          firstSheetInfo = {
+            sheetName: 'pdf',
+            totalRows: allPdfRows.length,
+            headerSnippet: allPdfRows.slice(0, Math.min(5, allPdfRows.length)).map(r => r.slice(0, 8)),
+          };
+        }
+        
         result = await applyRule(rule, rawData);
       } catch (pdfErr: any) {
         // Fallback: try to parse as raw text

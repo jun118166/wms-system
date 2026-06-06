@@ -134,96 +134,73 @@ export async function POST(req: NextRequest) {
       };
       result = await applyRule(rule, rawData);
     } else if (fileName.endsWith('.pdf')) {
-      // PDF: extract text items with positions, rebuild table structure
-      let pdfjsLib: any;
       try {
-        pdfjsLib = await import('pdfjs-dist');
-        const pdfData = new Uint8Array(buffer);
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-        const pdf = await loadingTask.promise;
+        const pdfParse = await import('pdf-parse');
+        const pdfData = await pdfParse.default(buffer);
+        const fullText = pdfData.text;
         
-        const allPdfRows: any[][] = [];
+        // Split into lines, clean up multi-line items
+        const rawLines = fullText.split('\n').map(l => l.trim()).filter(l => l);
         
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          
-          // Group text items by Y-position (rows) with tolerance
-          const yTolerance = 5;
-          const rowMap = new Map<number, { y: number; items: { x: number; text: string }[] }>();
-          
-          for (const item of textContent.items) {
-            const y = Math.round(item.transform[5]);
-            const x = Math.round(item.transform[4]);
-            const text = (item.str || '').trim();
-            if (!text) continue;
-            
-            // Find existing row within tolerance
-            let foundKey: number | null = null;
-            for (const [key, row] of rowMap) {
-              if (Math.abs(key - y) <= yTolerance) {
-                foundKey = key;
-                break;
-              }
+        // Parse each line: detect data rows (start with digit) vs header/footer lines
+        const headerLines: string[] = [];
+        const dataLines: string[][] = [];
+        const footerLines: string[] = [];
+        let inFooter = false;
+        
+        for (const line of rawLines) {
+          // Detect table rows: start with a number followed by Chinese category
+          const dataMatch = line.match(/^(\d+)\s*(饮品类|熟烙类|自助调料类|冻品类|蔬菜类|粮油类|调味类|其他类)/);
+          if (dataMatch) {
+            const afterNum = line.substring(dataMatch[0].length);
+            // Parse: SKU code (alphanumeric) + name (Chinese) + spec (alphanumeric/Chinese mix with * or numbers) + unit + quantity
+            const fieldsMatch = afterNum.match(/^([A-Za-z0-9]+)\s*(.+?)\s*(\d+(?:\.\d+)?[^\s]*?(?:件|瓶|包|盒|袋|kg|g|个|箱|桶))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
+            if (fieldsMatch) {
+              dataLines.push([dataMatch[1], dataMatch[2], fieldsMatch[1], fieldsMatch[2], fieldsMatch[3], fieldsMatch[4], fieldsMatch[5]]);
+              continue;
             }
-            
-            const key = foundKey ?? y;
-            if (!rowMap.has(key)) {
-              rowMap.set(key, { y: key, items: [] });
+            // Simpler fallback: split by common patterns
+            const parts = afterNum.trim().split(/\s+/);
+            if (parts.length >= 3) {
+              dataLines.push([dataMatch[1], dataMatch[2], ...parts]);
+              continue;
             }
-            rowMap.get(key)!.items.push({ x, text });
           }
           
-          // Sort rows by Y (top to bottom) and convert to columns
-          const sortedRows = [...rowMap.values()].sort((a, b) => a.y - b.y);
-          for (const row of sortedRows) {
-            // Sort items by X (left to right)
-            row.items.sort((a, b) => a.x - b.x);
-            const cells = row.items.map(it => it.text);
-            allPdfRows.push(cells);
+          // Detect footer lines (含 keyword)
+          if (inFooter || /收货机构|收货人|订货机构|联系电话|收货地址|签字|制单|合计|总计/.test(line)) {
+            inFooter = true;
+            footerLines.push(line);
+            continue;
           }
+          
+          headerLines.push(line);
         }
         
-        // Convert to sheets format
+        // Build sheet rows: header info as virtual rows + data rows
+        const allPdfRows: any[][] = [
+          ...headerLines.map(l => [l]),  // header as single-column rows
+          // Add a synthetic header for the data table
+          ['序号', '类别', '物品编码', '物品名称', '规格', '单位', '数量'],
+          ...dataLines,
+          ...footerLines.map(l => [l]),
+        ];
+        
         const rawText = allPdfRows.map(r => r.join('\t')).join('\n');
         
-        // Split into header area and table area based on table header detection
         const rawData = {
           fileName: file.name,
           fileType: 'pdf' as const,
-          sheets: [{
-            name: 'pdf',
-            rows: allPdfRows,
-            rowsCount: allPdfRows.length,
-            colsCount: Math.max(...allPdfRows.map(r => r.length), 0),
-          }],
+          sheets: [{ name: 'pdf', rows: allPdfRows, rowsCount: allPdfRows.length, colsCount: 7 }],
           rawText,
         };
         
-        // Capture debug info
-        if (allPdfRows.length > 0) {
-          const dataSlice = allPdfRows.slice(rule.headerRowsToSkip || 0, (rule.headerRowsToSkip || 0) + 5);
-          parseTrace = {
-            ...parseTrace,
-            pdfRows: allPdfRows.length,
-            pdfSample: dataSlice.map(r => r.slice(0, 8)),
-          };
-          firstSheetInfo = {
-            sheetName: 'pdf',
-            totalRows: allPdfRows.length,
-            headerSnippet: allPdfRows.slice(0, Math.min(5, allPdfRows.length)).map(r => r.slice(0, 8)),
-          };
-        }
+        parseTrace = { ...parseTrace, pdfRows: allPdfRows.length, pdfDataRows: dataLines.length, pdfSample: dataLines.slice(0, 5) };
+        firstSheetInfo = { sheetName: 'pdf', totalRows: allPdfRows.length, headerSnippet: allPdfRows.slice(0, 5) };
         
         result = await applyRule(rule, rawData);
       } catch (pdfErr: any) {
-        // Fallback: try to parse as raw text
-        const rawData = {
-          fileName: file.name,
-          fileType: 'pdf' as const,
-          sheets: [],
-          rawText: `PDF解析失败: ${pdfErr.message}`,
-        };
+        const rawData = { fileName: file.name, fileType: 'pdf' as const, sheets: [], rawText: `PDF解析失败: ${pdfErr.message}` };
         result = await applyRule(rule, rawData);
       }
     } else {

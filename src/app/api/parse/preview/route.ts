@@ -40,51 +40,46 @@ export async function POST(req: NextRequest) {
 
     if (fileName.endsWith('.pdf')) {
       try {
-        const pdfjsLib = await import('pdfjs-dist');
-        const pdfData = new Uint8Array(buffer);
-        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
-        const pdf = await loadingTask.promise;
+        const pdfParse = await import('pdf-parse');
+        const pdfData = await pdfParse.default(buffer);
+        const fullText = pdfData.text;
         
-        const allPdfRows: any[][] = [];
+        const rawLines = fullText.split('\n').map((l: string) => l.trim()).filter((l: string) => l);
+        const headerLines: string[] = [];
+        const dataLines: string[][] = [];
+        const footerLines: string[] = [];
+        let inFooter = false;
         
-        for (let i = 1; i <= pdf.numPages; i++) {
-          const page = await pdf.getPage(i);
-          const textContent = await page.getTextContent();
-          
-          const yTolerance = 5;
-          const rowMap = new Map<number, { y: number; items: { x: number; text: string }[] }>();
-          
-          for (const item of textContent.items) {
-            const y = Math.round(item.transform[5]);
-            const x = Math.round(item.transform[4]);
-            const text = (item.str || '').trim();
-            if (!text) continue;
-            
-            let foundKey: number | null = null;
-            for (const [key] of rowMap) {
-              if (Math.abs(key - y) <= yTolerance) { foundKey = key; break; }
+        for (const line of rawLines) {
+          const dataMatch = line.match(/^(\d+)\s*(饮品类|熟烙类|自助调料类|冻品类|蔬菜类|粮油类|调味类|其他类)/);
+          if (dataMatch) {
+            const afterNum = line.substring(dataMatch[0].length);
+            const fieldsMatch = afterNum.match(/^([A-Za-z0-9]+)\s*(.+?)\s*(\d+(?:\.\d+)?[^\s]*?(?:件|瓶|包|盒|袋|kg|g|个|箱|桶))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
+            if (fieldsMatch) {
+              dataLines.push([dataMatch[1], dataMatch[2], fieldsMatch[1], fieldsMatch[2], fieldsMatch[3], fieldsMatch[4], fieldsMatch[5]]);
+              continue;
             }
-            const key = foundKey ?? y;
-            if (!rowMap.has(key)) rowMap.set(key, { y: key, items: [] });
-            rowMap.get(key)!.items.push({ x, text });
+            const parts = afterNum.trim().split(/\s+/);
+            if (parts.length >= 3) { dataLines.push([dataMatch[1], dataMatch[2], ...parts]); continue; }
           }
-          
-          const sortedRows = [...rowMap.values()].sort((a, b) => a.y - b.y);
-          for (const row of sortedRows) {
-            row.items.sort((a, b) => a.x - b.x);
-            allPdfRows.push(row.items.map(it => it.text));
+          if (inFooter || /收货机构|收货人|订货机构|联系电话|收货地址|签字|制单|合计|总计/.test(line)) {
+            inFooter = true; footerLines.push(line); continue;
           }
+          headerLines.push(line);
         }
         
-        const rawText = allPdfRows.map(r => r.join('\t')).join('\n');
+        const allRows: any[][] = [
+          ...headerLines.map((l: string) => [l]),
+          ['序号', '类别', '物品编码', '物品名称', '规格', '单位', '数量'],
+          ...dataLines,
+          ...footerLines.map((l: string) => [l]),
+        ];
+        const rawText = allRows.map((r: any[]) => r.join('\t')).join('\n');
         
         return NextResponse.json({
           success: true,
           data: {
-            sheets: [{
-              name: 'pdf提取',
-              previewRows: allPdfRows.slice(0, 100),
-            }],
+            sheets: [{ name: 'pdf提取', previewRows: allRows.slice(0, 100) }],
             rawText: rawText.substring(0, 10000),
             fileType: 'pdf',
             fileName: file.name,
@@ -93,12 +88,7 @@ export async function POST(req: NextRequest) {
       } catch (e: any) {
         return NextResponse.json({
           success: true,
-          data: {
-            sheets: [],
-            rawText: `PDF解析失败: ${e.message}`,
-            fileType: 'pdf',
-            fileName: file.name,
-          },
+          data: { sheets: [], rawText: `PDF解析失败: ${e.message}`, fileType: 'pdf', fileName: file.name },
         });
       }
     }

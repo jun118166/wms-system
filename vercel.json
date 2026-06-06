@@ -1,0 +1,11 @@
+{
+  "regions": ["hkg1"],
+  "functions": {
+    "src/app/api/**/*.ts": {
+      "maxDuration": 60
+    }
+  },
+  "env": {
+    "NEXT_PUBLIC_APP_NAME": "WMS万能导入V2"
+  }
+}

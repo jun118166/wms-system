@@ -95,7 +95,7 @@ export default function DataTable({ data, onDataChange, onDeleteRow, onAddRow }:
 
   // Callback to measure container height
   const setContainerRef = useCallback((node: HTMLDivElement | null) => {
-    containerRef.current = node as any;
+    (containerRef as any).current = node;
     if (node) {
       setContainerHeight(node.clientHeight || 600);
     }

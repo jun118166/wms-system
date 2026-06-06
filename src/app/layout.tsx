@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import './globals.css';
 import { Toaster } from 'react-hot-toast';
-import NavBar from '@/components/NavBar';
+import SideNav from '@/components/SideNav';
 
 export const metadata: Metadata = {
   title: '万能导入 - 智能多格式批量下单系统',
@@ -11,11 +11,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body className="min-h-screen">
-        <NavBar />
-        <main className="mx-auto max-w-[1400px] px-4 sm:px-6 lg:px-8 py-6">
-          {children}
-        </main>
+      <body className="min-h-screen bg-gray-50">
+        <div className="flex min-h-screen">
+          <SideNav />
+          <main className="flex-1 px-6 py-6 overflow-auto">
+            {children}
+          </main>
+        </div>
         <Toaster
           position="top-center"
           toastOptions={{

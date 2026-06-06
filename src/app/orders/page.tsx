@@ -28,13 +28,14 @@ export default function OrdersPage() {
   const [total, setTotal] = useState(0);
   const [searchExternalCode, setSearchExternalCode] = useState('');
   const [searchRecipient, setSearchRecipient] = useState('');
+  const [pageSize, setPageSize] = useState(20);
 
   const loadOrders = useCallback(async (currentPage: number) => {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         page: String(currentPage),
-        pageSize: '20',
+        pageSize: String(pageSize),
       });
       if (searchExternalCode) params.set('externalCode', searchExternalCode);
       if (searchRecipient) params.set('recipientName', searchRecipient);
@@ -52,7 +53,7 @@ export default function OrdersPage() {
     } finally {
       setLoading(false);
     }
-  }, [searchExternalCode, searchRecipient]);
+  }, [searchExternalCode, searchRecipient, pageSize]);
 
   useEffect(() => {
     loadOrders(1);
@@ -116,11 +117,6 @@ export default function OrdersPage() {
         </div>
       </div>
 
-      {/* Stats */}
-      <div className="text-sm text-gray-400">
-        共 <span className="font-semibold text-gray-600">{total}</span> 条记录
-      </div>
-
       {/* Table */}
       {loading ? (
         <div className="text-center py-20 text-gray-400">加载中...</div>
@@ -176,24 +172,82 @@ export default function OrdersPage() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          <button
-            onClick={() => loadOrders(page - 1)}
-            disabled={page <= 1}
-            className="btn-secondary text-sm disabled:opacity-30"
-          >
-            上一页
-          </button>
-          <span className="text-sm text-gray-500 px-4">
-            第 {page} / {totalPages} 页
-          </span>
-          <button
-            onClick={() => loadOrders(page + 1)}
-            disabled={page >= totalPages}
-            className="btn-secondary text-sm disabled:opacity-30"
-          >
-            下一页
-          </button>
+        <div className="flex items-center justify-between mt-4">
+          <div className="text-sm text-gray-500">
+            共 <span className="font-semibold text-gray-700">{total}</span> 条
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Page size selector */}
+            <select
+              value={pageSize}
+              onChange={(e) => { setPageSize(Number(e.target.value)); loadOrders(1); }}
+              className="text-sm border border-gray-200 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-primary/30"
+            >
+              <option value={10}>10条/页</option>
+              <option value={20}>20条/页</option>
+              <option value={50}>50条/页</option>
+              <option value={100}>100条/页</option>
+            </select>
+
+            {/* Page buttons */}
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => loadOrders(page - 1)}
+                disabled={page <= 1}
+                className="w-8 h-8 flex items-center justify-center rounded-md text-sm border border-gray-200 text-gray-500 hover:border-primary hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                ‹
+              </button>
+
+              {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                let pageNum: number;
+                if (totalPages <= 5) {
+                  pageNum = i + 1;
+                } else if (page <= 3) {
+                  pageNum = i + 1;
+                } else if (page >= totalPages - 2) {
+                  pageNum = totalPages - 4 + i;
+                } else {
+                  pageNum = page - 2 + i;
+                }
+                return (
+                  <button
+                    key={pageNum}
+                    onClick={() => loadOrders(pageNum)}
+                    className={clsx(
+                      'w-8 h-8 flex items-center justify-center rounded-md text-sm font-medium transition-colors',
+                      pageNum === page
+                        ? 'bg-primary text-white'
+                        : 'border border-gray-200 text-gray-600 hover:border-primary hover:text-primary'
+                    )}
+                  >
+                    {pageNum}
+                  </button>
+                );
+              })}
+
+              {totalPages > 5 && page < totalPages - 2 && (
+                <span className="w-8 h-8 flex items-center justify-center text-gray-400">...</span>
+              )}
+
+              {totalPages > 5 && page < totalPages - 2 && (
+                <button
+                  onClick={() => loadOrders(totalPages)}
+                  className="w-8 h-8 flex items-center justify-center rounded-md text-sm border border-gray-200 text-gray-600 hover:border-primary hover:text-primary transition-colors"
+                >
+                  {totalPages}
+                </button>
+              )}
+
+              <button
+                onClick={() => loadOrders(page + 1)}
+                disabled={page >= totalPages}
+                className="w-8 h-8 flex items-center justify-center rounded-md text-sm border border-gray-200 text-gray-500 hover:border-primary hover:text-primary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                ›
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

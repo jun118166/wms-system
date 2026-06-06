@@ -39,15 +39,68 @@ export async function POST(req: NextRequest) {
     }
 
     if (fileName.endsWith('.pdf')) {
-      return NextResponse.json({
-        success: true,
-        data: {
-          sheets: [],
-          rawText: 'PDF文本提取需要服务端处理',
-          fileType: 'pdf',
-          fileName: file.name,
-        },
-      });
+      try {
+        const pdfjsLib = await import('pdfjs-dist');
+        const pdfData = new Uint8Array(buffer);
+        const loadingTask = pdfjsLib.getDocument({ data: pdfData });
+        const pdf = await loadingTask.promise;
+        
+        const allPdfRows: any[][] = [];
+        
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          
+          const yTolerance = 5;
+          const rowMap = new Map<number, { y: number; items: { x: number; text: string }[] }>();
+          
+          for (const item of textContent.items) {
+            const y = Math.round(item.transform[5]);
+            const x = Math.round(item.transform[4]);
+            const text = (item.str || '').trim();
+            if (!text) continue;
+            
+            let foundKey: number | null = null;
+            for (const [key] of rowMap) {
+              if (Math.abs(key - y) <= yTolerance) { foundKey = key; break; }
+            }
+            const key = foundKey ?? y;
+            if (!rowMap.has(key)) rowMap.set(key, { y: key, items: [] });
+            rowMap.get(key)!.items.push({ x, text });
+          }
+          
+          const sortedRows = [...rowMap.values()].sort((a, b) => a.y - b.y);
+          for (const row of sortedRows) {
+            row.items.sort((a, b) => a.x - b.x);
+            allPdfRows.push(row.items.map(it => it.text));
+          }
+        }
+        
+        const rawText = allPdfRows.map(r => r.join('\t')).join('\n');
+        
+        return NextResponse.json({
+          success: true,
+          data: {
+            sheets: [{
+              name: 'pdf提取',
+              previewRows: allPdfRows.slice(0, 100),
+            }],
+            rawText: rawText.substring(0, 10000),
+            fileType: 'pdf',
+            fileName: file.name,
+          },
+        });
+      } catch (e: any) {
+        return NextResponse.json({
+          success: true,
+          data: {
+            sheets: [],
+            rawText: `PDF解析失败: ${e.message}`,
+            fileType: 'pdf',
+            fileName: file.name,
+          },
+        });
+      }
     }
 
     return NextResponse.json({ success: false, error: '不支持的文件格式' }, { status: 400 });

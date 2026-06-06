@@ -142,7 +142,7 @@ export async function POST(req: NextRequest) {
         const fullText = pdfData.text;
         
         // Split into lines, clean up multi-line items
-        const rawLines = fullText.split('\n').map(l => l.trim()).filter(l => l);
+        const rawLines = fullText.split('\n').map((l: string) => l.trim()).filter((l: string) => l);
         
         // Parse each line: detect data rows (start with digit) vs header/footer lines
         const headerLines: string[] = [];

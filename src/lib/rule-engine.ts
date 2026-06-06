@@ -184,7 +184,10 @@ function autoDetectMatrixStructure(
     const looksLikeStoreName = header.length <= 6 && header.length >= 2;
     const minRatio = looksLikeStoreName ? 0.1 : 0.5;
 
-    if (totalChecked > 0 && numericCount / totalChecked >= minRatio) {
+    if (looksLikeStoreName && totalChecked === 0) {
+      // 完全空列但列头像门店名（如"门店B"前几行没数据）→ 仍然识别为门店列
+      storeLikeCols.push(c);
+    } else if (totalChecked > 0 && numericCount / totalChecked >= minRatio) {
       storeLikeCols.push(c);
     } else if (header.length <= 20) {
       // 短标题但非数字数据 → 可能是元数据列
@@ -946,9 +949,13 @@ function parseMatrix(rule: ParseRule, rows: any[][], footerInfo: Record<string, 
     // 短列头（≤6字）很可能是门店名，放宽要求
     const looksLikeStoreName = val.length <= 6 && val.length >= 2;
     const minRatio = looksLikeStoreName ? 0.1 : 0.5;
-    if (totalChecked > 0 && numericCount / totalChecked < minRatio) continue;
 
-    colHeaders.push({ idx: c, value: val });
+    if (looksLikeStoreName && totalChecked === 0) {
+      // 空列但列头像门店名 → 纳入
+      colHeaders.push({ idx: c, value: val });
+    } else if (totalChecked > 0 && numericCount / totalChecked >= minRatio) {
+      colHeaders.push({ idx: c, value: val });
+    }
   }
 
   for (let r = mc.dataStartRow - 1; r < rows.length; r++) {

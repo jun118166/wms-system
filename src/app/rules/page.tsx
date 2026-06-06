@@ -3,10 +3,13 @@
 import { useState, useEffect, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import type { ParseRule } from '@/lib/types';
+import RuleEditor from '@/components/RuleEditor';
 
 export default function RulesPage() {
   const [rules, setRules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showRuleEditor, setShowRuleEditor] = useState(false);
+  const [editingRule, setEditingRule] = useState<ParseRule & { id: string; name: string; description?: string } | null>(null);
 
   const loadRules = useCallback(async () => {
     setLoading(true);
@@ -49,10 +52,39 @@ export default function RulesPage() {
     }
   }, [loadRules]);
 
+  const handleEdit = useCallback(async (id: string) => {
+    try {
+      const res = await fetch(`/api/rules/${id}`);
+      const data = await res.json();
+      if (data.success && data.data) {
+        const rule = data.data;
+        setEditingRule({
+          id: rule.id,
+          name: rule.name,
+          description: rule.description,
+          ...(rule.config || {}),
+        });
+        setShowRuleEditor(true);
+      } else {
+        toast.error('加载规则失败');
+      }
+    } catch {
+      toast.error('加载规则失败');
+    }
+  }, []);
+
+  const handleRuleSaved = useCallback((rule: ParseRule & { id: string; name: string }) => {
+    setShowRuleEditor(false);
+    setEditingRule(null);
+    toast.success('规则已保存');
+    loadRules();
+  }, [loadRules]);
+
   const activeCount = rules.length;
   const aiCount = rules.filter(r => r.aiGenerated).length;
 
   return (
+    <>
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -118,12 +150,12 @@ export default function RulesPage() {
               </div>
 
               <div className="flex items-center gap-2 pt-3 border-t">
-                <a
-                  href={`/?editRule=${rule.id}`}
+                <button
+                  onClick={() => handleEdit(rule.id)}
                   className="text-xs text-primary hover:text-primary-dark font-medium"
                 >
                   编辑
-                </a>
+                </button>
                 <span className="text-gray-200">|</span>
                 <button
                   onClick={() => handleDelete(rule.id)}
@@ -141,5 +173,17 @@ export default function RulesPage() {
         </div>
       )}
     </div>
+
+    {showRuleEditor && (
+      <RuleEditor
+        fileName={editingRule?.name || ''}
+        fileType={editingRule?.sourceType || 'excel'}
+        previewData={null}
+        initialRule={editingRule || undefined}
+        onSave={handleRuleSaved}
+        onCancel={() => { setShowRuleEditor(false); setEditingRule(null); }}
+      />
+    )}
+    </>
   );
 }

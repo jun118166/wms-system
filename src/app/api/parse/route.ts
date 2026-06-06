@@ -135,8 +135,10 @@ export async function POST(req: NextRequest) {
       result = await applyRule(rule, rawData);
     } else if (fileName.endsWith('.pdf')) {
       try {
-        const pdfParse = await import('pdf-parse');
-        const pdfData = await pdfParse.default(buffer);
+        // 直接导入内部模块，绕过 index.js 中的 isDebugMode 测试文件读取
+        // @ts-ignore - pdf-parse 内部模块无类型声明
+        const pdfParse = (await import('pdf-parse/lib/pdf-parse.js')).default || (await import('pdf-parse/lib/pdf-parse.js'));
+        const pdfData = await pdfParse(buffer);
         const fullText = pdfData.text;
         
         // Split into lines, clean up multi-line items
@@ -149,26 +151,33 @@ export async function POST(req: NextRequest) {
         let inFooter = false;
         
         for (const line of rawLines) {
-          // Detect table rows: start with a number followed by Chinese category
-          const dataMatch = line.match(/^(\d+)\s*(饮品类|熟烙类|自助调料类|冻品类|蔬菜类|粮油类|调味类|其他类)/);
-          if (dataMatch) {
-            const afterNum = line.substring(dataMatch[0].length);
-            // Parse: SKU code (alphanumeric) + name (Chinese) + spec (alphanumeric/Chinese mix with * or numbers) + unit + quantity
-            const fieldsMatch = afterNum.match(/^([A-Za-z0-9]+)\s*(.+?)\s*(\d+(?:\.\d+)?[^\s]*?(?:件|瓶|包|盒|袋|kg|g|个|箱|桶))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
+          // Detect data rows: sequence number + Chinese category + alphanumeric SKU code
+          const dataMatch = line.match(/^(\d+)\s*([\u4e00-\u9fff]+(?:类|服)?)\s*([A-Za-z]\w*)/);
+          if (dataMatch && dataMatch[2].length <= 6 && dataMatch[3].length >= 4) {
+            // If we were in footer mode but hit a data row, reset
+            if (inFooter) inFooter = false;
+            const seqNum = dataMatch[1];
+            const category = dataMatch[2];
+            const afterCode = line.substring(dataMatch[0].length);
+            const skuCode = dataMatch[3];
+            // Try structured parse: name + spec + unit + quantity
+            const fieldsMatch = afterCode.match(/^\s*(.+?)\s*(\d+(?:\.\d+)?[^\s]*?(?:件|瓶|包|盒|袋|kg|g|个|箱|桶|码))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
             if (fieldsMatch) {
-              dataLines.push([dataMatch[1], dataMatch[2], fieldsMatch[1], fieldsMatch[2], fieldsMatch[3], fieldsMatch[4], fieldsMatch[5]]);
+              dataLines.push([seqNum, category, skuCode, fieldsMatch[1], fieldsMatch[2], fieldsMatch[3], fieldsMatch[4]]);
               continue;
             }
             // Simpler fallback: split by common patterns
-            const parts = afterNum.trim().split(/\s+/);
+            const parts = afterCode.trim().split(/\s+/);
             if (parts.length >= 3) {
-              dataLines.push([dataMatch[1], dataMatch[2], ...parts]);
+              dataLines.push([seqNum, category, skuCode, ...parts]);
               continue;
             }
           }
           
-          // Detect footer lines (含 keyword)
-          if (inFooter || /收货机构|收货人|订货机构|联系电话|收货地址|签字|制单|合计|总计/.test(line)) {
+          // Footer detection: only trigger if the line is NOT a multi-value info line
+          const headerInfoCount = (line.match(/单据编号|单据状态|复审状态|分拣状态|订单日期|发货日期|预计发货|期望到货|是否需要/g) || []).length;
+          const isMultiValueInfoLine = headerInfoCount >= 2;
+          if (!isMultiValueInfoLine && (inFooter || /收货机构|收货人|订货机构|联系电话|收货地址|签字|制单|合计|总计/.test(line))) {
             inFooter = true;
             footerLines.push(line);
             continue;

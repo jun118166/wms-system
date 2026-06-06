@@ -976,6 +976,19 @@ const MATRIX_COL_METADATA_PATTERNS = [
   /^外部(商品)?编码$/,
   /^(仓库|货主|库存|规格|单位|状态|分类|品牌|产地)/,
   /名称$|^编码$|^条码$|^编号$/,
+  /数量$|^数量|订货.*数|接单.*数|发货.*数|分拣.*数|辅助.*数|原订/,
+  /金额$|^金额|成本.*价|发货.*价|换单.*价|摊前.*价|摊后.*价|手动.*价|支付.*价/,
+  /单价$|^单价|换算率|换算关系/,
+  /重量$|^重量|积$|^积/,
+  /品牌$|^品牌/,
+  // 序号/行号列
+  /^序号$|^行号$|^#$/,
+  // 单位相关（基准单位、分拣单位、辅助单位等）
+  /单位$|^单位/,
+  // 折扣相关
+  /折扣$|^折扣/,
+  // 备注
+  /^备注$/,
 ];
 
 function isSummaryColumn(header: string): boolean {
@@ -1188,6 +1201,9 @@ async function parsePdfWithRule(rule: ParseRule, rawData: RawFileData, errors: s
   for (let i = dataStartIdx; i < dataRows.length - rule.footerRowsToSkip; i++) {
     const row = dataRows[i];
     if (row.every(c => !c)) continue;
+    // 过滤合计/总计行
+    const firstCell = String(row[0] || '').trim();
+    if (/^(合计|总计|小计|总和|结余|余额)$/.test(firstCell)) continue;
     const item = mapRowToOrder(row, headerRow, rule, footerInfo, '', i + rule.headerRowsToSkip);
     if (item && item.skuName) items.push(item);
   }

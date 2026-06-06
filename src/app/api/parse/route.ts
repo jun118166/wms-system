@@ -151,33 +151,44 @@ export async function POST(req: NextRequest) {
         let inFooter = false;
         
         for (const line of rawLines) {
-          // Detect data rows: sequence number + Chinese category + alphanumeric SKU code
-          const dataMatch = line.match(/^(\d+)\s*([\u4e00-\u9fff]+(?:类|服)?)\s*([A-Za-z]\w*)/);
-          if (dataMatch && dataMatch[2].length <= 6 && dataMatch[3].length >= 4) {
-            // If we were in footer mode but hit a data row, reset
+          // === 优先检测数据行 ===
+          // 数据行格式: 序号(数字) + 类别(中文) + SKU编码(字母数字) + 名称规格数量
+          // 例如: "1饮品类ZBWP0001茶语柠听紫苏风味糖浆750ml*6瓶 件件2"
+          // 或: "36工作衣ZBWP0094后厨上衣XL码 件12"
+          const dataMatch = line.match(/^(\d+)\s*([\u4e00-\u9fff]+)\s*([A-Za-z]\w{4,})/);
+          if (dataMatch && dataMatch[2].length <= 8 && dataMatch[3].length >= 4) {
+            // 数据行优先级最高，即使在footer区域也要识别
             if (inFooter) inFooter = false;
             const seqNum = dataMatch[1];
             const category = dataMatch[2];
             const afterCode = line.substring(dataMatch[0].length);
             const skuCode = dataMatch[3];
-            // Try structured parse: name + spec + unit + quantity
-            const fieldsMatch = afterCode.match(/^\s*(.+?)\s*(\d+(?:\.\d+)?[^\s]*?(?:件|瓶|包|盒|袋|kg|g|个|箱|桶|码))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
+            
+            // 尝试结构化解析: 名称 + 规格 + 单位 + 数量
+            // 例如: "茶语柠听紫苏风味糖浆750ml*6瓶 件件2"
+            const fieldsMatch = afterCode.match(/^(.+?)\s*(\d[\d.]*\s*[^\s]*(?:件|瓶|包|盒|袋|kg|g|个|箱|桶|码))\s*(件|瓶|包|盒|袋|个|箱|桶|kg)\s*(\d+)$/);
             if (fieldsMatch) {
-              dataLines.push([seqNum, category, skuCode, fieldsMatch[1], fieldsMatch[2], fieldsMatch[3], fieldsMatch[4]]);
+              dataLines.push([seqNum, category, skuCode, fieldsMatch[1].trim(), fieldsMatch[2].trim(), fieldsMatch[3], fieldsMatch[4]]);
               continue;
             }
-            // Simpler fallback: split by common patterns
+            
+            // 简化解析: 按空格分割
             const parts = afterCode.trim().split(/\s+/);
             if (parts.length >= 3) {
               dataLines.push([seqNum, category, skuCode, ...parts]);
               continue;
             }
+            
+            // 即使解析不完整，也记录为数据行（后续可通过autoDetectColumn映射）
+            dataLines.push([seqNum, category, skuCode, afterCode.trim()]);
+            continue;
           }
           
-          // Footer detection: only trigger if the line is NOT a multi-value info line
-          const headerInfoCount = (line.match(/单据编号|单据状态|复审状态|分拣状态|订单日期|发货日期|预计发货|期望到货|是否需要/g) || []).length;
-          const isMultiValueInfoLine = headerInfoCount >= 2;
-          if (!isMultiValueInfoLine && (inFooter || /收货机构|收货人|订货机构|联系电话|收货地址|签字|制单|合计|总计/.test(line))) {
+          // === Footer检测 ===
+          // 只有在明确看到footer标记时才进入footer模式
+          // 注意: "收货机构"等可能出现在页眉中，不能作为footer唯一判断
+          const isClearFooter = /(^合计|^总计|^制单日期|^创建人|^发货人|^收货人签字|^打印次数|^备注：$|^备注:$)/.test(line.trim());
+          if (isClearFooter || (inFooter && !/^\d+/.test(line))) {
             inFooter = true;
             footerLines.push(line);
             continue;

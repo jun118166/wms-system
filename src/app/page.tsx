@@ -19,6 +19,7 @@ export default function HomePage() {
   const [selectedRuleId, setSelectedRuleId] = useState<string | null>(null);
   const [selectedRuleConfig, setSelectedRuleConfig] = useState<ParseRule | null>(null);
   const [showRuleEditor, setShowRuleEditor] = useState(false);
+  const [ruleRefreshKey, setRuleRefreshKey] = useState(0);
   const [previewData, setPreviewData] = useState<any>(null); // For AI analysis
   const [orders, setOrders] = useState<OrderItem[]>([]);
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
@@ -246,6 +247,7 @@ export default function HomePage() {
 
   const handleRuleSaved = useCallback((rule: ParseRule & { id: string; name: string }) => {
     setShowRuleEditor(false);
+    setRuleRefreshKey(k => k + 1);
     setSelectedRuleId(rule.id);
     setSelectedRuleConfig(rule);
     toast.success('规则已保存');
@@ -297,6 +299,7 @@ export default function HomePage() {
               onSelect={handleRuleSelect}
               onCreateNew={handleCreateNewRule}
               currentFileType={previewData?.fileType || null}
+              refreshTrigger={ruleRefreshKey}
             />
           </div>
           <div className="lg:col-span-2 space-y-4">

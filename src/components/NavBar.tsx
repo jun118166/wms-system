@@ -18,13 +18,13 @@ export default function NavBar() {
       <div className="mx-auto max-w-[1400px] px-4 sm:px-6 lg:px-8">
         <div className="flex items-center justify-between h-14">
           {/* Logo */}
-          <Link href="/" className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center">
-              <span className="text-white font-bold text-sm">WMS</span>
+          <Link href="/" className="flex items-center gap-3 group">
+            <div className="w-8 h-8 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-lg flex items-center justify-center shadow-sm group-hover:shadow-md transition-shadow">
+              <span className="text-white font-bold text-xs">WMS</span>
             </div>
-            <div>
+            <div className="flex items-baseline gap-2">
               <span className="font-bold text-base text-gray-900">万能导入 V2</span>
-              <span className="text-xs text-gray-400 ml-2 hidden sm:inline">智能批量下单系统</span>
+              <span className="text-xs text-gray-400 hidden sm:inline">智能批量下单系统</span>
             </div>
           </Link>
 

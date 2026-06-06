@@ -462,22 +462,22 @@ function mapRowToOrder(
 
     // Assign to item using targetField
     if (targetField === 'skuQuantity') {
-      (item as any)[targetField] = Number(value) || 0;
+      (item as any)[targetField] = Number(value) || 1;
     } else {
       (item as any)[targetField] = String(value || '').trim();
     }
   }
 
-  // Auto-detect columns for unmapped SKU fields (last resort)
-  const skuFields = ['skuCode', 'skuName', 'skuQuantity', 'skuSpec'];
-  for (const field of skuFields) {
-    if (!item[field] || item[field] === '0') {
+  // Auto-detect columns for unmapped fields (last resort)
+  const autoDetectFields = ['skuCode', 'skuName', 'skuQuantity', 'skuSpec', 'storeName', 'recipientName', 'recipientPhone', 'recipientAddress', 'externalCode', 'remark'];
+  for (const field of autoDetectFields) {
+    if (!item[field] || item[field] === '0' || item[field] === '') {
       const idx = autoDetectColumn(headerRow, field);
       if (idx >= 0 && idx < row.length && row[idx]) {
         const val = String(row[idx] || '').trim();
         if (val) {
           if (field === 'skuQuantity') {
-            item[field] = Number(val) || 0;
+            item[field] = Number(val) || 1;
           } else {
             item[field] = val;
           }
@@ -510,24 +510,25 @@ function mapRowToOrder(
 /** 当显式列名匹配失败时，根据目标字段自动检测列索引 */
 export function autoDetectColumn(headerRow: any[], field: string): number {
   const fieldPatterns: Record<string, RegExp[]> = {
-    skuCode: [/编码|code|货号/i, /sku.*码|物品.*码|产品.*码|商品.*码/i, /^sku$/i],
-    skuName: [/名称|品名|name/i, /物品|商品|货品|产品/, /sku.*名|物品名/i],
-    skuQuantity: [/数量|件数|个数|qty|quantity/i, /出库|发货|出货/i],
-    skuSpec: [/规格|型号|spec/i],
-    externalCode: [/单号|运单|订单|外部/i],
-    storeName: [/门店|店铺|收货门店/i],
-    recipientName: [/收件人|收货人|联系人/i],
-    recipientPhone: [/电话|手机|联系方式/i],
-    recipientAddress: [/地址|addr/i],
-    remark: [/备注|说明/i],
+    skuCode: [/物品编码|商品编码|产品编码|货品编码/i, /sku.*码/i, /编码|code|货号/i, /^sku$/i],
+    skuName: [/物品名称|商品名称|产品名称|货品名称|品名/i, /sku.*名/i, /名称|name/i],
+    skuQuantity: [/发货数量|出库数量|出货数量/i, /数量|件数|个数|qty|quantity/i],
+    skuSpec: [/规格型号|规格/i, /型号/i, /spec/i],
+    externalCode: [/配送汇总单号|配送单号/i, /单号|运单|订单|外部/i],
+    storeName: [/收货机构|客户名称|收货单位/i, /收货门店|门店|店铺/i],
+    recipientName: [/收货人|收件人|联系人/i],
+    recipientPhone: [/收货电话|联系电话/i, /电话|手机|联系方式/i],
+    recipientAddress: [/收货地址|地址/i, /addr/i],
+    remark: [/单据备注|物品备注/i, /备注|说明/i],
   };
 
   const patterns = fieldPatterns[field];
   if (!patterns) return -1;
 
-  for (let i = 0; i < headerRow.length; i++) {
-    const cell = String(headerRow[i] || '').trim();
-    for (const pattern of patterns) {
+  // 先尝试用更精确的模式（数组前面的）匹配所有列，找到最佳匹配
+  for (const pattern of patterns) {
+    for (let i = 0; i < headerRow.length; i++) {
+      const cell = String(headerRow[i] || '').trim();
       if (pattern.test(cell)) {
         return i;
       }
@@ -738,7 +739,12 @@ function extractFooterInfo(config: FooterInfoExtraction, rows: any[][]): Record<
             // But ensure this isn't a LONGER label (e.g., "收货人签字" when label is "收货人")
             const charAfterLabel = cellText[label.length];
             if (charAfterLabel === '：' || charAfterLabel === ':' || charAfterLabel === ' ') {
-              const value = cellText.substring(label.length + 1).trim();
+              let value = cellText.substring(label.length + 1).trim();
+              // 处理多个字段挤在一行的情况，去掉后面的已知标签
+              // 例如: "收货人：荣丽收货电话：13130093946" → 提取"荣丽"
+              const knownLabels = ['收货人', '收货电话', '收货地址', '收货机构', '订货机构', '供货机构', '送货机构', '制单日期', '创建人', '发货人', '收货人签字', '打印次数', '备注', '合计', '总计'];
+              const labelPattern = knownLabels.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+              value = value.replace(new RegExp(`(?:${labelPattern})[：:].*$`), '').trim();
               if (value) {
                 info[mapping.field] = value;
                 break;
@@ -752,15 +758,19 @@ function extractFooterInfo(config: FooterInfoExtraction, rows: any[][]): Record<
           const rowStr = row.join(' ').trim();
           if (rowStr) {
             const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(`${escapedLabel}[：:\\s]+(\\S+)`, 'i');
+            // 改进：贪婪匹配到行尾，然后去掉后面的已知标签
+            // 例如: "收货人：荣丽收货电话：13130093946" → 提取"荣丽"
+            // 例如: "发货操作时间：2026/04/22 16:32:23收货机构：黔寨寨贵州烙锅（鞍山首店）订货机构：..." → 提取"黔寨寨贵州烙锅（鞍山首店）"
+            const regex = new RegExp(`${escapedLabel}[：:\\s]+(.+)`, 'i');
             const match = rowStr.match(regex);
             if (match && match[1]) {
-              // Verify the match isn't from a longer label
-              const matchIdx = rowStr.indexOf(match[0]);
-              const charBefore = matchIdx > 0 ? rowStr[matchIdx - 1] : '';
-              // If there's a Chinese character right before the label, it might be a longer label — skip
-              if (!charBefore || /[\s,，;；|]/.test(charBefore)) {
-                info[mapping.field] = match[1].trim();
+              // 去掉后面的已知标签模式
+              let val = match[1].trim();
+              const knownLabels = ['收货人', '收货电话', '收货地址', '收货机构', '订货机构', '供货机构', '送货机构', '制单日期', '创建人', '发货人', '收货人签字', '打印次数', '备注', '合计', '总计'];
+              const labelPattern = knownLabels.map(l => l.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+              val = val.replace(new RegExp(`(?:${labelPattern})[：:].*$`), '').trim();
+              if (val) {
+                info[mapping.field] = val;
               }
             }
           }
@@ -976,7 +986,7 @@ const MATRIX_COL_METADATA_PATTERNS = [
   /^外部(商品)?编码$/,
   /^(仓库|货主|库存|规格|单位|状态|分类|品牌|产地)/,
   /名称$|^编码$|^条码$|^编号$/,
-  /数量$|^数量|订货.*数|接单.*数|发货.*数|分拣.*数|辅助.*数|原订/,
+  /数量$|^数量|订货.*数|接单.*数|发货.*数|分拣.*数|辅助.*数|原订|应发/,
   /金额$|^金额|成本.*价|发货.*价|换单.*价|摊前.*价|摊后.*价|手动.*价|支付.*价/,
   /单价$|^单价|换算率|换算关系/,
   /重量$|^重量|积$|^积/,
@@ -989,6 +999,30 @@ const MATRIX_COL_METADATA_PATTERNS = [
   /折扣$|^折扣/,
   // 备注
   /^备注$/,
+  // 机构/门店/仓库相关（非矩阵门店列）
+  /机构$|^机构|门店$|^门店|仓库$|^仓库/,
+  // 批次/生产日期/保质期
+  /批次|生产日期|保质期/,
+  // 单据相关
+  /单据|单号|配送/,
+  // 收货人/电话/地址相关（这些是每行都有的收件人信息列，不是矩阵门店列）
+  /收货人|收件人|联系人|收货电话|联系电话|收货地址|收货手机|备用联系|电话$|手机$/,
+  // 日期相关
+  /日期|时间/,
+  // 分类相关
+  /分类|类别/,
+  // 行号相关
+  /行号|行次|序号/,
+  // 换算相关
+  /换算/,
+  // 品牌相关
+  /品牌/,
+  // 预计/期望相关
+  /预计|期望/,
+  // 汇总单号相关
+  /汇总/,
+  // 物品相关
+  /物品/,
 ];
 
 function isSummaryColumn(header: string): boolean {
@@ -1157,39 +1191,57 @@ function parseWordWithRule(rule: ParseRule, rawData: RawFileData, errors: string
 // ===== PDF Parsing =====
 
 async function parsePdfWithRule(rule: ParseRule, rawData: RawFileData, errors: string[]): Promise<OrderItem[]> {
-  // PDF parsing uses extracted text from pdfjs-dist
-  // The rawText should already contain the extracted text
   const items: OrderItem[] = [];
   if (!rawData.rawText) {
     errors.push('PDF文本提取失败');
     return items;
   }
 
-  // Use the same logic as excel row parsing but with the text converted to rows
-  const lines = rawData.rawText.split('\n').filter(l => l.trim());
-  const virtualRows = lines.map(l => [l]);
+  // 优先使用 route.ts 已经解析好的表格数据
+  if (rawData.sheets && rawData.sheets.length > 0 && rawData.sheets[0].rows && rawData.sheets[0].rows.length > 0) {
+    const sheet = rawData.sheets[0];
+    const processedRows = sheet.rows;
 
-  // For PDF, try to use text config first, fall back to row-based
-  if (rule.textConfig?.enabled) {
-    return parseWordWithRule(rule, rawData, errors);
+    // Process footer extraction
+    const footerInfo = rule.footerInfoExtraction?.enabled
+      ? extractFooterInfo(rule.footerInfoExtraction, processedRows)
+      : {};
+
+    // 找到合成表头行（包含"序号"、"物品编码"等关键词的行）
+    let headerRowIdx = -1;
+    for (let i = 0; i < processedRows.length; i++) {
+      const row = processedRows[i];
+      const rowStr = row.join(' ');
+      if (rowStr.includes('序号') && (rowStr.includes('物品编码') || rowStr.includes('sku') || rowStr.includes('编码'))) {
+        headerRowIdx = i;
+        break;
+      }
+    }
+
+    const headerRow = headerRowIdx >= 0 ? processedRows[headerRowIdx] : [];
+    const dataStartIdx = headerRowIdx >= 0 ? headerRowIdx + 1 : rule.headerRowsToSkip;
+
+    for (let i = dataStartIdx; i < processedRows.length - rule.footerRowsToSkip; i++) {
+      const row = processedRows[i];
+      if (!row || row.length === 0 || row.every(c => !c)) continue;
+      // 过滤合计/总计行
+      const firstCell = String(row[0] || '').trim();
+      if (/^(合计|总计|小计|总和|结余|余额)$/.test(firstCell)) continue;
+      // 过滤纯文本行（单列且不含数字序号）
+      if (row.length === 1 && !/^\d/.test(firstCell)) continue;
+      const item = mapRowToOrder(row, headerRow, rule, footerInfo, '', i);
+      if (item && item.skuName) items.push(item);
+    }
+
+    return items;
   }
 
-  // Row-based approach for PDF
-  const allText = lines.join(' || ');
-  // Create virtual rows by splitting on potential row boundaries
+  // Fallback: 如果没有表格数据，用原始文本解析
+  const lines = rawData.rawText.split('\n').filter(l => l.trim());
   const processedRows = lines.map(line => {
-    // Split by tabs, multiple spaces, or pipe characters
     return line.split(/\t+|  +|\|/).map(c => c.trim()).filter(c => c);
   }).filter(row => row.length > 0);
 
-  const sheetLike = {
-    name: 'pdf',
-    rows: processedRows,
-    rowsCount: processedRows.length,
-    colsCount: Math.max(...processedRows.map(r => r.length)),
-  };
-
-  // Process footer extraction
   const footerInfo = rule.footerInfoExtraction?.enabled
     ? extractFooterInfo(rule.footerInfoExtraction, processedRows)
     : {};
@@ -1201,7 +1253,6 @@ async function parsePdfWithRule(rule: ParseRule, rawData: RawFileData, errors: s
   for (let i = dataStartIdx; i < dataRows.length - rule.footerRowsToSkip; i++) {
     const row = dataRows[i];
     if (row.every(c => !c)) continue;
-    // 过滤合计/总计行
     const firstCell = String(row[0] || '').trim();
     if (/^(合计|总计|小计|总和|结余|余额)$/.test(firstCell)) continue;
     const item = mapRowToOrder(row, headerRow, rule, footerInfo, '', i + rule.headerRowsToSkip);
@@ -1240,10 +1291,16 @@ function postProcess(items: OrderItem[], rule: ParseRule): OrderItem[] {
         newItems.push(item);
       }
     }
-    return newItems;
+    items = newItems;
   }
 
-  return items;
+  // 当 externalCode 与 skuCode 一致时，清空 externalCode
+  return items.map(item => {
+    if (item.externalCode && item.skuCode && item.externalCode === item.skuCode) {
+      return { ...item, externalCode: '' };
+    }
+    return item;
+  });
 }
 
 function aggregateOrders(items: OrderItem[], groupField: string): OrderItem[] {

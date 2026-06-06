@@ -9,9 +9,10 @@ interface RuleSelectorProps {
   onSelect: (ruleId: string, ruleConfig: ParseRule) => void;
   onCreateNew: () => void;
   currentFileType?: 'excel' | 'word' | 'pdf' | null;
+  refreshTrigger?: number;
 }
 
-export default function RuleSelector({ selectedRuleId, onSelect, onCreateNew, currentFileType }: RuleSelectorProps) {
+export default function RuleSelector({ selectedRuleId, onSelect, onCreateNew, currentFileType, refreshTrigger }: RuleSelectorProps) {
   const [rules, setRules] = useState<(ParseRule & { id: string; name: string; description: string })[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -39,7 +40,7 @@ export default function RuleSelector({ selectedRuleId, onSelect, onCreateNew, cu
 
   useEffect(() => {
     loadRules();
-  }, [loadRules]);
+  }, [loadRules, refreshTrigger]);
 
   const filteredRules = rules.filter(r => {
     if (search && !r.name.includes(search) && !r.description?.includes(search)) return false;

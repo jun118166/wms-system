@@ -1310,11 +1310,13 @@ function aggregateOrders(items: OrderItem[], groupField: string): OrderItem[] {
 // ===== Validation =====
 
 export function validateOrderItems(items: OrderItem[]): OrderItem[] {
-  return items.map((item, idx) => {
+  // 过滤掉SKU编码为空的行
+  const validItems = items.filter(item => item.skuCode && item.skuCode.trim() !== '');
+  
+  return validItems.map((item, idx) => {
     const errors: any[] = [];
 
     // Required fields
-    if (!item.skuCode) errors.push({ rowIndex: idx, field: 'skuCode', message: 'SKU编码不能为空' });
     if (!item.skuName) errors.push({ rowIndex: idx, field: 'skuName', message: 'SKU名称不能为空' });
     if (!item.skuQuantity || item.skuQuantity <= 0) {
       errors.push({ rowIndex: idx, field: 'skuQuantity', message: '发货数量必须为正数' });
